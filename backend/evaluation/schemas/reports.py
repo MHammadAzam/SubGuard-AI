@@ -64,6 +64,9 @@ class DocumentEvaluationResult(BaseModel):
     error_type: Optional[str] = None
     error_message: Optional[str] = None
     error_code: Optional[str] = None
+    status_code: Optional[int] = None
+    request_id: Optional[str] = None
+    is_retryable: Optional[bool] = None
 
 
 class FieldMetricStats(BaseModel):

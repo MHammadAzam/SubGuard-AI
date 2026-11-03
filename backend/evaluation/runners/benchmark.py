@@ -530,6 +530,9 @@ class BenchmarkRunner:
                 error_type=pipeline_result.error_type,
                 error_message=diag_message,
                 error_code=pipeline_result.error_code,
+                status_code=pipeline_result.status_code,
+                request_id=pipeline_result.request_id,
+                is_retryable=pipeline_result.is_retryable,
             )
 
             if res.is_strictly_passed:
@@ -553,7 +556,14 @@ class BenchmarkRunner:
         config_errors = sum(1 for d in doc_results if d.processing_status in ("configuration_error", "authentication_error"))
         provider_errors = sum(
             1 for d in doc_results
-            if d.processing_status in ("provider_error", "rate_limit_error", "timeout_error", "schema_validation_error", "invalid_model_response")
+            if d.processing_status in (
+                "provider_error",
+                "rate_limit_error",
+                "timeout_error",
+                "invalid_request",
+                "schema_validation_error",
+                "invalid_model_response",
+            )
         )
         not_run_docs = sum(1 for d in doc_results if d.processing_status in ("not_run", "file_not_found"))
         evaluated_docs = sum(1 for d in doc_results if d.processing_status in ("processed", "requires_ocr", "partial_success"))
@@ -573,14 +583,20 @@ class BenchmarkRunner:
         for d in doc_results:
             if d.error_message or d.error_type or d.processing_status in (
                 "configuration_error", "authentication_error", "provider_error",
-                "rate_limit_error", "timeout_error", "schema_validation_error",
+                "rate_limit_error", "timeout_error", "invalid_request", "schema_validation_error",
                 "invalid_model_response", "file_not_found"
             ):
                 summary_line = f"[{d.document_id}] Status: {d.processing_status}"
                 if d.error_type:
                     summary_line += f" | Type: {d.error_type}"
-                if d.error_code:
+                if d.status_code is not None:
+                    summary_line += f" | HTTP: {d.status_code}"
+                elif d.error_code:
                     summary_line += f" | Code: {d.error_code}"
+                if d.is_retryable is not None:
+                    summary_line += f" | Retryable: {d.is_retryable}"
+                if d.request_id:
+                    summary_line += f" | RequestID: {d.request_id}"
                 if d.error_message:
                     summary_line += f"\n   Message: {d.error_message}"
                 error_summaries.append(summary_line)

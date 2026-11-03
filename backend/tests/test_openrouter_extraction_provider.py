@@ -437,9 +437,11 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
     def test_d1_provider_exception_survives_pipeline_handling(self):
         """D1. Original provider exception type, status code, error code, and message survive pipeline handling."""
         mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = Exception(
-            "Error code: 503 - {'error': {'message': 'Model nvidia/nemotron-3.5-super-vl:free is currently offline', 'code': 'model_offline'}}"
-        )
+        err = Exception("Model nvidia/nemotron-3.5-super-vl:free is currently offline")
+        err.status_code = 503
+        err.code = "model_offline"
+        err.request_id = "req-offline-503"
+        mock_client.chat.completions.create.side_effect = err
 
         provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, max_retries=1)
         pipeline = ExtractionPipelineService(extraction_provider=provider)
@@ -461,12 +463,16 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
         self.assertEqual(res.error_type, "ExtractionProviderError")
         self.assertEqual(res.status_code, 503)
         self.assertEqual(res.error_code, "model_offline")
+        self.assertEqual(res.request_id, "req-offline-503")
         self.assertIn("Model nvidia/nemotron-3.5-super-vl:free is currently offline", res.error_message)
 
     def test_d2_benchmark_json_contains_sanitized_diagnostic(self):
         """D2. Benchmark JSON output preserves error_type, error_code, and error_message in document_results."""
         mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = Exception("404 Model Not Found: nvidia/nemotron-3.5-super-vl:free")
+        err404 = Exception("404 Model Not Found: nvidia/nemotron-3.5-super-vl:free")
+        err404.status_code = 404
+        err404.code = "model_not_found"
+        mock_client.chat.completions.create.side_effect = err404
 
         from evaluation.runners.benchmark import BenchmarkRunner
         runner = BenchmarkRunner(provider_name="openrouter", model_name="nvidia/nemotron-3.5-super-vl:free", openrouter_api_key="test-key")
@@ -478,8 +484,8 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
         report = runner.run_benchmark(dataset, max_documents=1)
 
         json_str = report.model_dump_json()
-        self.assertIn('"error_type":"ExtractionProviderError"', json_str)
-        self.assertIn('"error_code":"http_404"', json_str)
+        self.assertIn('"error_type":"ExtractionInvalidRequestError"', json_str)
+        self.assertIn('"status_code":404', json_str)
         self.assertIn("404 Model Not Found", json_str)
         self.assertTrue(len(report.error_summaries) > 0)
         self.assertIn("404 Model Not Found", report.error_summaries[0])
@@ -488,7 +494,9 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
         """D3. Console report formatted via format_summary_table displays diagnostic error section."""
         from evaluation.runners.benchmark import BenchmarkRunner, format_summary_table
         mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = Exception("429 Too Many Requests: Rate limit exceeded")
+        err429 = Exception("Rate limit exceeded")
+        err429.status_code = 429
+        mock_client.chat.completions.create.side_effect = err429
 
         runner = BenchmarkRunner(provider_name="openrouter", model_name="nvidia/nemotron-3.5-super-vl:free", openrouter_api_key="test-key")
         runner.provider._injected_client = mock_client
@@ -501,7 +509,7 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
 
         self.assertIn("DIAGNOSTIC ERROR DETAILS (1 failure):", console_table)
         self.assertIn("Type: ExtractionRateLimitError", console_table)
-        self.assertIn("Code: rate_limit_exceeded", console_table)
+        self.assertIn("HTTP: 429", console_table)
         self.assertIn("Rate limit exceeded", console_table)
 
     def test_d4_api_keys_and_authorization_headers_never_appear_in_reports(self):
@@ -538,6 +546,132 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
 
     def test_d5_existing_mock_and_gemini_behavior_remains_unchanged(self):
         """D5. Existing mock benchmark executes normally with 0 error summaries and correct evaluations."""
+        from evaluation.runners.benchmark import BenchmarkRunner, format_summary_table
+        runner = BenchmarkRunner(provider_name="mock")
+        dataset = build_default_synthetic_dataset()
+        report = runner.run_benchmark(dataset, max_documents=1)
+
+        self.assertEqual(report.evaluated_documents_count, 1)
+        self.assertEqual(report.configuration_errors_count, 0)
+        self.assertEqual(report.provider_errors_count, 0)
+        self.assertEqual(len(report.error_summaries), 0)
+
+        table_str = format_summary_table(report)
+        self.assertIn("MOCK PROVIDER", table_str)
+        self.assertNotIn("DIAGNOSTIC ERROR DETAILS", table_str)
+
+    def test_free_only_model_enforcement(self):
+        """Provider must reject non-free models and automatic routers, and pin default to free."""
+        # Non-free models rejected
+        with self.assertRaises(ExtractionConfigurationError) as ctx1:
+            OpenRouterExtractionProvider(api_key="key", model_name="openai/gpt-4o")
+        self.assertIn("not an explicitly approved free model", str(ctx1.exception))
+
+        with self.assertRaises(ExtractionConfigurationError) as ctx2:
+            OpenRouterExtractionProvider(api_key="key", model_name="openrouter/auto")
+        self.assertIn("not an explicitly approved free model", str(ctx2.exception))
+
+        with self.assertRaises(ExtractionConfigurationError) as ctx3:
+            OpenRouterExtractionProvider(api_key="key", model_name="anthropic/claude-3.5-sonnet")
+        self.assertIn("not an explicitly approved free model", str(ctx3.exception))
+
+        # Approved free models allowed
+        p1 = OpenRouterExtractionProvider(api_key="key", model_name="nvidia/nemotron-3.5-super-vl:free")
+        self.assertEqual(p1.model_name, "nvidia/nemotron-3.5-super-vl:free")
+
+        p2 = OpenRouterExtractionProvider(api_key="key", model_name="meta-llama/llama-3.3-70b-instruct:free")
+        self.assertEqual(p2.model_name, "meta-llama/llama-3.3-70b-instruct:free")
+
+        # Default model is nvidia/nemotron-3.5-super-vl:free
+        p_default = OpenRouterExtractionProvider(api_key="key", model_name=None)
+        self.assertEqual(p_default.model_name, "nvidia/nemotron-3.5-super-vl:free")
+
+    def test_response_format_unsupported_auto_compatibility(self):
+        """When a model rejects response_format (400), provider retries without it and succeeds."""
+        mock_client = MagicMock()
+        err400 = Exception("Provider does not support response_format: json_object")
+        err400.status_code = 400
+
+        success_response = _make_mock_chat_completion('{"document_type": "coi", "coverages": []}')
+
+        mock_client.chat.completions.create.side_effect = [err400, success_response]
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text on page")
+        res = provider.extract_insurance_data("DOC-COMPAT", [page])
+
+        self.assertEqual(res.document_type, "coi")
+        self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+        # First call attempted with response_format
+        first_call_kwargs = mock_client.chat.completions.create.call_args_list[0].kwargs
+        self.assertIn("response_format", first_call_kwargs)
+        # Second call succeeded without response_format
+        second_call_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        self.assertNotIn("response_format", second_call_kwargs)
+
+    def test_malformed_json_does_not_echo_raw_completion_snippet(self):
+        """Malformed JSON error messages must not include completion snippets or confidential text."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            '{"document_type": "coi", "secret": "CONFIDENTIAL_PAYLOAD_12345", broken_json'
+        )
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text")
+
+        with self.assertRaises(ExtractionSchemaValidationError) as ctx:
+            provider.extract_insurance_data("DOC-MALFORMED", [page])
+
+        err_str = str(ctx.exception)
+        self.assertNotIn("CONFIDENTIAL_PAYLOAD_12345", err_str)
+        self.assertNotIn("Raw content:", err_str)
+        self.assertIn("Failed to parse OpenRouter response as JSON", err_str)
+
+    def test_pydantic_validation_error_does_not_echo_submitted_values(self):
+        """Pydantic validation failure message must list field names without echoing submitted values."""
+        mock_client = MagicMock()
+        # Invalid type for named_insured (int instead of object)
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps({"document_type": "coi", "named_insured": 987654321})
+        )
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text")
+
+        with self.assertRaises(ExtractionSchemaValidationError) as ctx:
+            provider.extract_insurance_data("DOC-PYDANTIC-ERR", [page])
+
+        err_str = str(ctx.exception)
+        self.assertNotIn("987654321", err_str)
+        self.assertIn("named_insured", err_str)
+
+    def test_openrouter_failure_never_calls_gemini(self):
+        """Failure in OpenRouter must never trigger Gemini or any other provider."""
+        mock_client = MagicMock()
+        err = Exception("OpenRouter service failure")
+        err.status_code = 500
+        mock_client.chat.completions.create.side_effect = err
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, max_retries=1)
+        pipeline = ExtractionPipelineService(extraction_provider=provider)
+
+        inspection = PDFDocumentInspection(
+            document_id="DOC-NO-FALLBACK",
+            filename="test.pdf",
+            file_size_bytes=1000,
+            content_hash_sha256="hash",
+            page_count=1,
+            pages=[_make_dummy_page(1, "Text")],
+            classified_type=DocumentType.COI,
+            classification_confidence=1.0,
+            classification_reason="test",
+        )
+
+        with patch("app.extraction.providers.gemini.GeminiExtractionProvider.extract_insurance_data") as mock_gemini:
+            res = pipeline.process_inspection(inspection, "SUB-01")
+            mock_gemini.assert_not_called()
+            self.assertEqual(res.processing_status.value, "failed")
+            self.assertEqual(res.error_category, "provider_error")
         from evaluation.runners.benchmark import BenchmarkRunner, format_summary_table
         runner = BenchmarkRunner(provider_name="mock")
         dataset = build_default_synthetic_dataset()

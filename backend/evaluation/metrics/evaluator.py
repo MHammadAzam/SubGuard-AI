@@ -188,6 +188,7 @@ EXECUTION_FAILURE_STATUSES = {
     "provider_error",
     "rate_limit_error",
     "timeout_error",
+    "invalid_request",
     "schema_validation_error",
     "invalid_model_response",
     "not_run",
@@ -207,6 +208,9 @@ class MetricsEvaluator:
         error_type: Optional[str] = None,
         error_message: Optional[str] = None,
         error_code: Optional[str] = None,
+        status_code: Optional[int] = None,
+        request_id: Optional[str] = None,
+        is_retryable: Optional[bool] = None,
     ) -> DocumentEvaluationResult:
         """Run full evaluation on a single extracted document against ground truth."""
         field_results: List[FieldEvaluationResult] = []
@@ -279,6 +283,9 @@ class MetricsEvaluator:
                 error_type=error_type,
                 error_message=error_message,
                 error_code=error_code,
+                status_code=status_code,
+                request_id=request_id,
+                is_retryable=is_retryable,
             )
 
         # 2. Evaluate Named Insured

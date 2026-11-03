@@ -63,7 +63,7 @@ backend/
 │   ├── test_extraction_pipeline.py  # 13 unit tests for extraction, normalization, OCR & evidence
 │   ├── test_evaluation_framework.py # 20 unit tests for ground truth, metrics & evidence grounding
 │   ├── test_gemini_extraction_provider.py # 8 unit tests for Gemini SDK integration, error handling & retries
-│   ├── test_openrouter_extraction_provider.py # 19 unit tests for OpenRouter SDK integration, error handling, diagnostics & retries
+│   ├── test_openrouter_extraction_provider.py # 24 unit tests for OpenRouter SDK integration, error handling, diagnostics & retries
 │   ├── test_api.py                  # 3 integration tests for FastAPI endpoint
 │   └── fixtures/
 │       ├── __init__.py
@@ -124,15 +124,16 @@ python -m evaluation.runners.benchmark --provider openrouter --model nvidia/nemo
 > [!CAUTION]
 > **Data Privacy Warning:** Never submit real, confidential, or proprietary subcontractor insurance documents to free public models. Free-tier endpoints may log prompts or use submitted data for model evaluation. Restrict free-model benchmarking strictly to the provided synthetic test fixtures.
 
-- **Zero-Cost Protection:** The provider will **never** automatically fall back to paid models (e.g. GPT-4o) or paid providers (e.g. Gemini). If the specified free model fails or is unavailable, the pipeline terminates cleanly with an explicit error.
-- **Credential Protection:** API keys and tokens are automatically redacted in console logs and generated benchmark reports (`[REDACTED]`).
-- **Rate-Limit Troubleshooting:** Free models on OpenRouter may experience queuing delays, strict rate limits (HTTP 429), or temporary downtime (HTTP 503). The provider automatically performs bounded exponential backoff retries. If rate limits persist, reduce concurrency or benchmark document count (`--max-documents 1`).
+- **Free-Only Model Enforcement:** OpenRouter is strictly restricted to free models. Any requested model must explicitly end with `:free` (default: `nvidia/nemotron-3.5-super-vl:free`). Paid models and automatic/random routers (`openrouter/auto`) are rejected immediately with `ExtractionConfigurationError`.
+- **Zero-Cost Protection:** The provider will **never** automatically fall back to paid models (e.g. GPT-4o) or paid providers (e.g. Gemini). If the specified free model fails or is unavailable, the pipeline terminates cleanly with a structured diagnostic error.
+- **Credential & Privacy Protection:** API keys, Bearer tokens, and Authorization headers are automatically redacted in console logs and generated benchmark reports (`[REDACTED_API_KEY]`, `[REDACTED_TOKEN]`). Raw completion text snippets and submitted input values are stripped from error messages.
+- **Rate-Limit & Request Troubleshooting:** Free models on OpenRouter may experience queuing delays, strict rate limits (HTTP 429), or temporary downtime (HTTP 503). The provider automatically performs bounded exponential backoff retries for transient errors. If a model rejects `response_format={"type": "json_object"}` with HTTP 400, the provider automatically falls back to requesting without that parameter while enforcing full JSON parsing and Pydantic validation.
 
 ---
 
 ## Running Tests
 
-The test suite requires Python 3.12+, Pydantic v2, PyMuPDF, google-genai, and openai. Run all 117 automated tests using standard library `unittest`:
+The test suite requires Python 3.12+, Pydantic v2, PyMuPDF, google-genai, and openai. Run all 122 automated tests using standard library `unittest`:
 
 ```bash
 cd backend

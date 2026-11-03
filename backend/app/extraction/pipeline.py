@@ -26,6 +26,7 @@ from app.extraction.providers.base import (
     ExtractionAuthenticationError,
     ExtractionConfigurationError,
     ExtractionInvalidModelResponseError,
+    ExtractionInvalidRequestError,
     ExtractionProviderError,
     ExtractionRateLimitError,
     ExtractionSchemaValidationError,
@@ -135,6 +136,8 @@ class ExtractionPipelineResult:
         error_message: Optional[str] = None,
         error_code: Optional[str] = None,
         status_code: Optional[int] = None,
+        request_id: Optional[str] = None,
+        is_retryable: Optional[bool] = None,
     ):
         self.document_set = document_set
         self.processing_status = processing_status
@@ -145,6 +148,8 @@ class ExtractionPipelineResult:
         self.error_message = error_message
         self.error_code = error_code
         self.status_code = status_code
+        self.request_id = request_id
+        self.is_retryable = is_retryable
 
 
 class ExtractionPipelineService:
@@ -275,24 +280,30 @@ class ExtractionPipelineService:
             exc_type = exc.__class__.__name__
             status_code = getattr(exc, "status_code", None)
             error_code = getattr(exc, "error_code", None) or (str(status_code) if status_code else None)
+            request_id = getattr(exc, "request_id", None)
+            is_retryable = getattr(exc, "is_retryable", False)
 
             # Determine granular category
-            if isinstance(exc, ExtractionAuthenticationError) or "401" in clean_msg.lower() or "unauthorized" in clean_msg.lower():
-                category = "authentication_error"
-            elif isinstance(exc, ExtractionConfigurationError) or "api key is not configured" in clean_msg.lower():
-                category = "configuration_error"
-            elif isinstance(exc, ExtractionRateLimitError) or "429" in clean_msg.lower():
-                category = "rate_limit_error"
-            elif isinstance(exc, ExtractionTimeoutError) or "timeout" in clean_msg.lower():
-                category = "timeout_error"
-            elif isinstance(exc, ExtractionInvalidModelResponseError):
-                category = "invalid_model_response"
-            elif isinstance(exc, ExtractionSchemaValidationError):
-                category = "schema_validation_error"
-            elif isinstance(exc, ExtractionProviderError):
-                category = "provider_error"
-            else:
-                category = "provider_error"
+            category = getattr(exc, "error_category", None)
+            if not category:
+                if isinstance(exc, ExtractionAuthenticationError) or status_code == 401 or "401" in clean_msg.lower() or "unauthorized" in clean_msg.lower():
+                    category = "authentication_error"
+                elif isinstance(exc, ExtractionConfigurationError) or "api key is not configured" in clean_msg.lower():
+                    category = "configuration_error"
+                elif isinstance(exc, ExtractionRateLimitError) or status_code == 429 or "429" in clean_msg.lower():
+                    category = "rate_limit_error"
+                elif isinstance(exc, ExtractionTimeoutError) or status_code == 408 or "timeout" in clean_msg.lower():
+                    category = "timeout_error"
+                elif isinstance(exc, ExtractionInvalidRequestError) or status_code in (400, 404, 422):
+                    category = "invalid_request"
+                elif isinstance(exc, ExtractionInvalidModelResponseError):
+                    category = "invalid_model_response"
+                elif isinstance(exc, ExtractionSchemaValidationError):
+                    category = "schema_validation_error"
+                elif isinstance(exc, ExtractionProviderError):
+                    category = "provider_error"
+                else:
+                    category = "provider_error"
 
             return ExtractionPipelineResult(
                 document_set=None,
@@ -303,6 +314,8 @@ class ExtractionPipelineService:
                 error_message=clean_msg,
                 error_code=error_code,
                 status_code=status_code,
+                request_id=request_id,
+                is_retryable=is_retryable,
             )
 
         # Map and normalize into ExtractedDocumentSet

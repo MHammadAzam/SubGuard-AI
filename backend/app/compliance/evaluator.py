@@ -87,7 +87,7 @@ def _clean_entity_name(name: str) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned)
     # Remove surrounding quotes or commas
     cleaned = cleaned.strip(",'\"")
-    return cleaned
+    return cleaned.strip()
 
 
 def compare_entity_names(
@@ -106,11 +106,14 @@ def compare_entity_names(
     Returns:
         (is_match, reason)
     """
-    if not extracted_name:
+    if not extracted_name or not extracted_name.strip():
         return False, "NO_NAME_EXTRACTED"
 
     cleaned_ext = _clean_entity_name(extracted_name)
     cleaned_req = _clean_entity_name(required_name)
+
+    if not cleaned_ext or not cleaned_req:
+        return False, "NO_NAME_EXTRACTED"
 
     # 1. Exact case-sensitive match
     if cleaned_ext == cleaned_req:
@@ -141,7 +144,7 @@ def compare_entity_names(
     # 4. Substring / partial checks
     ext_lower = cleaned_ext.lower()
     req_lower = cleaned_req.lower()
-    if ext_lower in req_lower or req_lower in ext_lower:
+    if ext_lower and req_lower and (ext_lower in req_lower or req_lower in ext_lower):
         return False, "PARTIAL_OR_SUBSTRING_MISMATCH"
 
     return False, "NAME_MISMATCH"
@@ -388,8 +391,27 @@ def evaluate_policy_expiration(
     exp_date_obj = cov.expiration_date
     evidence_list = [cov.evidence] if cov.evidence else []
 
-    # Check confidence
-    if exp_date_obj.confidence is not None and exp_date_obj.confidence < CONFIDENCE_THRESHOLD:
+    # Check extraction confidence / status
+    if cov.extraction_status == ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT:
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=req.severity,
+            reason_code="EXPIRATION_DATE_EVIDENCE_SUPPORT_UNVERIFIED",
+            explanation=(
+                f"Extracted {req.coverage_type.value} expiration date has cited document text "
+                "whose semantic support for this date is unverified. Human review required."
+            ),
+            requires_human_review=True,
+            required_value={"evaluation_date": evaluation_date.isoformat()},
+            found_value={"date": exp_date_obj.date.isoformat(), "raw_text": exp_date_obj.raw_text},
+            evidence=evidence_list,
+        )
+
+    if cov.extraction_status == ExtractionStatus.UNCERTAIN or (
+        exp_date_obj.confidence is not None and exp_date_obj.confidence < CONFIDENCE_THRESHOLD
+    ):
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
@@ -397,8 +419,8 @@ def evaluate_policy_expiration(
             severity=req.severity,
             reason_code="EXPIRATION_DATE_CONFIDENCE_LOW",
             explanation=(
-                f"Extracted expiration date {exp_date_obj.date.isoformat()} has low confidence. "
-                "Human review required."
+                f"Extracted expiration date {exp_date_obj.date.isoformat()} has low confidence "
+                f"({exp_date_obj.confidence or 'uncertain'}). Human review required."
             ),
             requires_human_review=True,
             required_value={"evaluation_date": evaluation_date.isoformat()},
@@ -517,6 +539,43 @@ def evaluate_policy_effective_date(
     eff_date_obj = cov.effective_date
     evidence_list = [cov.evidence] if cov.evidence else []
 
+    # Check extraction confidence / status
+    if cov.extraction_status == ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT:
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=req.severity,
+            reason_code="EFFECTIVE_DATE_EVIDENCE_SUPPORT_UNVERIFIED",
+            explanation=(
+                f"Extracted {req.coverage_type.value} effective date has cited document text "
+                "whose semantic support for this date is unverified. Human review required."
+            ),
+            requires_human_review=True,
+            required_value={"evaluation_date": evaluation_date.isoformat()},
+            found_value={"date": eff_date_obj.date.isoformat(), "raw_text": eff_date_obj.raw_text},
+            evidence=evidence_list,
+        )
+
+    if cov.extraction_status == ExtractionStatus.UNCERTAIN or (
+        eff_date_obj.confidence is not None and eff_date_obj.confidence < CONFIDENCE_THRESHOLD
+    ):
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.UNABLE_TO_DETERMINE,
+            severity=req.severity,
+            reason_code="EFFECTIVE_DATE_CONFIDENCE_LOW",
+            explanation=(
+                f"Extracted effective date {eff_date_obj.date.isoformat()} has low confidence "
+                f"({eff_date_obj.confidence or 'uncertain'}). Human review required."
+            ),
+            requires_human_review=True,
+            required_value={"evaluation_date": evaluation_date.isoformat()},
+            found_value={"date": eff_date_obj.date.isoformat(), "raw_text": eff_date_obj.raw_text},
+            evidence=evidence_list,
+        )
+
     # Check if mandatory evidence is required and present
     if req.mandatory_evidence and not evidence_list:
         return ComplianceFinding(
@@ -592,18 +651,19 @@ def evaluate_named_insured(
     doc_set: ExtractedDocumentSet,
 ) -> ComplianceFinding:
     """Evaluate whether the named insured on the certificate matches the required entity name."""
-    if not doc_set.named_insured:
+    if not doc_set.named_insured or not doc_set.named_insured.name or not doc_set.named_insured.name.strip():
+        evidence_list = [doc_set.named_insured.evidence] if (doc_set.named_insured and doc_set.named_insured.evidence) else []
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
             status=ComplianceStatus.MISSING_EVIDENCE,
             severity=req.severity,
             reason_code="NAMED_INSURED_NOT_FOUND",
-            explanation="No named insured entity found in extracted documents.",
+            explanation="No named insured entity name found in extracted documents.",
             requires_human_review=True,
             required_value={"required_entity_name": req.required_entity_name},
             found_value=None,
-            evidence=[],
+            evidence=evidence_list,
         )
 
     ni = doc_set.named_insured
@@ -680,6 +740,19 @@ def evaluate_named_insured(
             requires_human_review=False,
             required_value={"required_entity_name": req.required_entity_name},
             found_value={"extracted_name": ni.name},
+            evidence=evidence_list,
+        )
+    elif reason == "NO_NAME_EXTRACTED":
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.MISSING_EVIDENCE,
+            severity=req.severity,
+            reason_code="NAMED_INSURED_NOT_FOUND",
+            explanation="Named insured entity name is missing, empty, or blank in extracted documents.",
+            requires_human_review=True,
+            required_value={"required_entity_name": req.required_entity_name},
+            found_value=None,
             evidence=evidence_list,
         )
     elif reason in ("PARTIAL_OR_SUBSTRING_MISMATCH", "CORPORATE_SUFFIX_DISCREPANCY"):
@@ -819,6 +892,27 @@ def evaluate_endorsement_presence(
             explanation=(
                 f"{req.required_endorsement_type.value} endorsement form has cited text on the page, "
                 "but specific semantic support for this endorsement is unverified. Human review required."
+            ),
+            requires_human_review=True,
+            required_value={"required_endorsement": req.required_endorsement_type.value},
+            found_value={"form_number": primary_end.form_number},
+            evidence=evidence_list,
+        )
+
+    # Check extraction confidence / status
+    if primary_end.extraction_status == ExtractionStatus.UNCERTAIN or (
+        primary_end.confidence is not None and primary_end.confidence < CONFIDENCE_THRESHOLD
+    ):
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.UNABLE_TO_DETERMINE,
+            severity=req.severity,
+            reason_code="ENDORSEMENT_CONFIDENCE_LOW",
+            explanation=(
+                f"Extracted {req.required_endorsement_type.value} endorsement form "
+                f"({primary_end.form_number or 'unspecified'}) has low extraction confidence "
+                f"({primary_end.confidence or 'uncertain'}). Human verification required."
             ),
             requires_human_review=True,
             required_value={"required_endorsement": req.required_endorsement_type.value},

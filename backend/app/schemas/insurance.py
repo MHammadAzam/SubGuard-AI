@@ -166,6 +166,7 @@ class CoverageExtraction(BaseModel):
     # Tracking & evidence
     evidence: Optional[EvidenceReference] = None
     extraction_status: ExtractionStatus = ExtractionStatus.EXTRACTED
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class EndorsementExtraction(BaseModel):
@@ -183,6 +184,7 @@ class EndorsementExtraction(BaseModel):
     )
     evidence: Optional[EvidenceReference] = None
     extraction_status: ExtractionStatus = ExtractionStatus.EXTRACTED
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class ExtractedDocumentSet(BaseModel):

@@ -672,19 +672,566 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
             mock_gemini.assert_not_called()
             self.assertEqual(res.processing_status.value, "failed")
             self.assertEqual(res.error_category, "provider_error")
-        from evaluation.runners.benchmark import BenchmarkRunner, format_summary_table
-        runner = BenchmarkRunner(provider_name="mock")
+
+    def test_unrelated_http_400_does_not_retry(self):
+        """HTTP 400 error unrelated to response_format must fail immediately with call_count == 1."""
+        from app.extraction.providers.base import ExtractionInvalidRequestError
+
+        mock_client = MagicMock()
+        err400 = Exception("Bad Request: prompt token limit exceeded")
+        err400.status_code = 400
+
+        mock_client.chat.completions.create.side_effect = err400
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, max_retries=3)
+        page = _make_dummy_page(1, "Text on page")
+
+        with self.assertRaises(ExtractionInvalidRequestError) as ctx:
+            provider.extract_insurance_data("DOC-UNRELATED-400", [page])
+
+        # Must not retry: exactly 1 call made
+        self.assertEqual(mock_client.chat.completions.create.call_count, 1)
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("prompt token limit exceeded", str(ctx.exception))
+
+    def test_response_format_retry_at_most_once_on_persistent_failure(self):
+        """Response_format 400 retries at most once; persistent 400 halts on attempt 2 without endless loops."""
+        from app.extraction.providers.base import ExtractionInvalidRequestError
+
+        mock_client = MagicMock()
+        err_rf = Exception("The model does not support response_format: json_object")
+        err_rf.status_code = 400
+
+        err_second = Exception("Bad Request: invalid temperature")
+        err_second.status_code = 400
+
+        mock_client.chat.completions.create.side_effect = [err_rf, err_second]
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, max_retries=3)
+        page = _make_dummy_page(1, "Text on page")
+
+        with self.assertRaises(ExtractionInvalidRequestError):
+            provider.extract_insurance_data("DOC-PERSISTENT-400", [page])
+
+        # Exactly 2 calls: 1st with response_format, 2nd without response_format, then stopped
+        self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+        call1_kwargs = mock_client.chat.completions.create.call_args_list[0].kwargs
+        call2_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        self.assertIn("response_format", call1_kwargs)
+        self.assertNotIn("response_format", call2_kwargs)
+
+    def test_response_format_retry_preserves_mandatory_json_and_pydantic_validation(self):
+        """When response_format retry succeeds at network layer, schema validation is NOT disabled."""
+        mock_client = MagicMock()
+        err_rf = Exception("Unsupported parameter: 'response_format'")
+        err_rf.status_code = 400
+
+        # Attempt 2 returns plain text that is NOT valid JSON
+        non_json_response = _make_mock_chat_completion("Sorry, I cannot return JSON formatted data.")
+        mock_client.chat.completions.create.side_effect = [err_rf, non_json_response]
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text on page")
+
+        with self.assertRaises(ExtractionSchemaValidationError) as ctx:
+            provider.extract_insurance_data("DOC-SCHEMA-ENFORCED", [page])
+
+        self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+        self.assertIn("Failed to parse OpenRouter response as JSON", str(ctx.exception))
+
+    def test_end_to_end_offline_synthetic_pdf_to_deterministic_compliance(self):
+        """End-to-end flow: Real PDF bytes -> PDF inspection -> OpenRouter extraction -> normalization -> evidence verification -> deterministic compliance evaluation."""
+        from pathlib import Path
+        from app.documents.processor import PDFProcessor
+        from app.compliance.evaluator import ComplianceEvaluator
+        from app.schemas.insurance import (
+            ComplianceStatus,
+            InsuranceRequirement,
+            LimitField,
+            RequirementType,
+        )
+
+        pdf_path = Path(__file__).resolve().parent.parent / "evaluation" / "fixtures" / "pdfs" / "synthetic_standard_acord25.pdf"
+        self.assertTrue(pdf_path.exists(), f"Synthetic PDF fixture not found at {pdf_path}")
+        pdf_bytes = pdf_path.read_bytes()
+
+        # Step 1: PDF Inspection
+        pdf_processor = PDFProcessor(render_dpi=72)
+        inspection = pdf_processor.process_pdf(pdf_bytes, document_id="E2E-SYNTH-001")
+        self.assertFalse(inspection.is_scanned)
+        self.assertGreater(inspection.page_count, 0)
+        self.assertEqual(inspection.classified_type, DocumentType.COI)
+
+        # Step 2: OpenRouter Mocked Extraction (model returns verbatim text present in synthetic_standard_acord25.pdf)
+        mock_client = MagicMock()
+        valid_extraction_payload = {
+            "document_type": "coi",
+            "named_insured": {
+                "name": "Apex Electrical Contractors LLC",
+                "evidence": {
+                    "page_number": 1,
+                    "source_text": "INSURED: Apex Electrical Contractors LLC",
+                },
+            },
+            "certificate_holder": {
+                "name": "General Contractor Corp",
+                "evidence": {
+                    "page_number": 1,
+                    "source_text": "CERTIFICATE HOLDER: General Contractor Corp",
+                },
+            },
+            "coverages": [
+                {
+                    "coverage_type": "general_liability",
+                    "policy_number": "GL-98765432",
+                    "effective_date": "01/01/2025",
+                    "expiration_date": "01/01/2026",
+                    "each_occurrence": "$1,000,000",
+                    "general_aggregate": "$2,000,000",
+                    "evidence": {
+                        "page_number": 1,
+                        "source_text": "POLICY NUMBER: GL-98765432",
+                    },
+                }
+            ],
+            "endorsements": [],
+        }
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps(valid_extraction_payload)
+        )
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        pipeline = ExtractionPipelineService(extraction_provider=provider)
+
+        # Step 3: Pipeline Execution (Extraction + Normalization + Evidence Verification)
+        pipeline_result = pipeline.process_inspection(inspection, subcontractor_id="SUB-APEX")
+        self.assertEqual(pipeline_result.processing_status.value, "processed")
+        self.assertIsNotNone(pipeline_result.document_set)
+
+        doc_set = pipeline_result.document_set
+        self.assertEqual(doc_set.named_insured.name, "Apex Electrical Contractors LLC")
+        self.assertEqual(doc_set.named_insured.extraction_status, ExtractionStatus.EXTRACTED)
+        self.assertIsNotNone(doc_set.named_insured.evidence)
+        self.assertEqual(doc_set.named_insured.evidence.page_number, 1)
+
+        # Confirm currency normalized to integer cents
+        gl_coverage = doc_set.coverages[0]
+        self.assertEqual(gl_coverage.each_occurrence.amount_cents, 100_000_000)
+        self.assertEqual(gl_coverage.general_aggregate.amount_cents, 200_000_000)
+        self.assertEqual(gl_coverage.effective_date.date, date(2025, 1, 1))
+        self.assertEqual(gl_coverage.expiration_date.date, date(2026, 1, 1))
+
+        # Step 4: Deterministic Compliance Engine Evaluation
+        req_gl = InsuranceRequirement(
+            requirement_id="REQ_GL_EACH_OCC",
+            rule_type=RequirementType.COVERAGE_LIMIT,
+            description="General Liability Each Occurrence >= $1,000,000",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            limit_field=LimitField.EACH_OCCURRENCE,
+            min_amount_cents=100_000_000,
+        )
+        req_ni = InsuranceRequirement(
+            requirement_id="REQ_NI",
+            rule_type=RequirementType.NAMED_INSURED,
+            description="Named Insured must match Apex Electrical Contractors LLC",
+            required_entity_name="Apex Electrical Contractors LLC",
+        )
+
+        compliance_evaluator = ComplianceEvaluator()
+        review = compliance_evaluator.evaluate(
+            document_set=doc_set,
+            requirements=[req_gl, req_ni],
+            evaluation_date=date(2025, 6, 1),
+        )
+
+        self.assertEqual(review.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertFalse(review.requires_human_review)
+        self.assertEqual(len(review.findings), 2)
+        self.assertEqual(review.findings[0].status, ComplianceStatus.COMPLIANT)
+        self.assertEqual(review.findings[1].status, ComplianceStatus.COMPLIANT)
+
+    def test_evidence_integrity_tampered_page_or_quote_routes_to_human_review(self):
+        """Evidence verification prevents unsupported quotes: invalid pages and corrupt quotes become UNCERTAIN."""
+        from pathlib import Path
+        from app.documents.processor import PDFProcessor
+        from app.compliance.evaluator import ComplianceEvaluator
+        from app.schemas.insurance import (
+            ComplianceStatus,
+            InsuranceRequirement,
+            RequirementType,
+        )
+
+        pdf_path = Path(__file__).resolve().parent.parent / "evaluation" / "fixtures" / "pdfs" / "synthetic_standard_acord25.pdf"
+        pdf_processor = PDFProcessor(render_dpi=72)
+        inspection = pdf_processor.process_pdf(pdf_path.read_bytes(), document_id="E2E-TAMPER-001")
+
+        # Case 1: Non-existent page (e.g. Page 99)
+        mock_client = MagicMock()
+        tampered_page_payload = {
+            "document_type": "coi",
+            "named_insured": {
+                "name": "Acme Construction LLC",
+                "evidence": {
+                    "page_number": 99,
+                    "source_text": "Acme Construction LLC",
+                },
+            },
+        }
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(json.dumps(tampered_page_payload))
+        provider1 = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        pipeline1 = ExtractionPipelineService(extraction_provider=provider1)
+        res1 = pipeline1.process_inspection(inspection, "SUB-01")
+
+        # Page 99 doesn't exist -> UNCERTAIN, evidence unverified
+        self.assertEqual(res1.document_set.named_insured.extraction_status, ExtractionStatus.UNCERTAIN)
+        self.assertIsNone(res1.document_set.named_insured.evidence)
+
+        # Case 2: Corrupt quote that does not appear in the PDF
+        tampered_quote_payload = {
+            "document_type": "coi",
+            "named_insured": {
+                "name": "Acme Construction LLC",
+                "evidence": {
+                    "page_number": 1,
+                    "source_text": "FABRICATED_INSURANCE_QUOTE_TEXT_THAT_DOES_NOT_EXIST",
+                },
+            },
+        }
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(json.dumps(tampered_quote_payload))
+        provider2 = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        pipeline2 = ExtractionPipelineService(extraction_provider=provider2)
+        res2 = pipeline2.process_inspection(inspection, "SUB-02")
+
+        self.assertEqual(res2.document_set.named_insured.extraction_status, ExtractionStatus.UNCERTAIN)
+        self.assertIsNone(res2.document_set.named_insured.evidence)
+
+        # Case 3: Compliance Evaluator with mandatory evidence rejects UNCERTAIN fields
+        req_ni = InsuranceRequirement(
+            requirement_id="REQ_NI_STRICT",
+            rule_type=RequirementType.NAMED_INSURED,
+            description="Strict Named Insured",
+            required_entity_name="Acme Construction LLC",
+            mandatory_evidence=True,
+        )
+        evaluator = ComplianceEvaluator()
+        review = evaluator.evaluate(
+            document_set=res2.document_set,
+            requirements=[req_ni],
+            evaluation_date=date(2025, 6, 1),
+        )
+        self.assertNotEqual(review.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertTrue(review.requires_human_review)
+
+    def test_benchmark_runner_excludes_openrouter_provider_failure_from_accuracy(self):
+        """When OpenRouter fails during benchmark run, metrics evaluator excludes it from accuracy denominator with 0 false negatives."""
+        from evaluation.runners.benchmark import BenchmarkRunner
+
+        mock_client = MagicMock()
+        err = Exception("OpenRouter 502 Bad Gateway: upstream server error")
+        err.status_code = 502
+        mock_client.chat.completions.create.side_effect = err
+
+        runner = BenchmarkRunner(
+            provider_name="openrouter",
+            model_name="nvidia/nemotron-3.5-super-vl:free",
+            openrouter_api_key="test-key",
+        )
+        runner.provider._injected_client = mock_client
+        runner.provider.max_retries = 1
+        runner.pipeline_service.extraction_provider = runner.provider
+
         dataset = build_default_synthetic_dataset()
-        report = runner.run_benchmark(dataset, max_documents=1)
+        report = runner.run_benchmark(dataset, max_documents=2)
 
-        self.assertEqual(report.evaluated_documents_count, 1)
+        self.assertEqual(report.total_documents, 2)
+        self.assertEqual(report.evaluated_documents_count, 0)
+        self.assertEqual(report.provider_errors_count, 2)
         self.assertEqual(report.configuration_errors_count, 0)
-        self.assertEqual(report.provider_errors_count, 0)
-        self.assertEqual(len(report.error_summaries), 0)
+        # Verify 0 false negatives in aggregate metrics
+        field_stats = report.field_metrics.get("all")
+        self.assertEqual(field_stats.false_negatives, 0)
+        self.assertEqual(field_stats.total_evaluated, 0)
+        self.assertTrue(len(report.error_summaries) == 2)
+        self.assertIn("502 Bad Gateway", report.error_summaries[0])
 
-        table_str = format_summary_table(report)
-        self.assertIn("MOCK PROVIDER", table_str)
-        self.assertNotIn("DIAGNOSTIC ERROR DETAILS", table_str)
+    # ========================================================================
+    # Phase 3A: Schema Failure Diagnostic Regression Tests
+    # ========================================================================
+
+    def test_schema_diagnostic_1_correctly_structured_insurer_list(self):
+        """1. Correctly structured list of insurer strings parses cleanly into list."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps({"document_type": "coi", "insurers": ["Travelers Indemnity Co", "Hartford Fire Insurance"]})
+        )
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text")
+        res = provider.extract_insurance_data("DOC-INS-VALID", [page])
+
+        self.assertIsInstance(res.insurers, list)
+        self.assertEqual(res.insurers, ["Travelers Indemnity Co", "Hartford Fire Insurance"])
+
+    def test_schema_diagnostic_2_missing_insurer_information_defaults_empty(self):
+        """2. When insurers key is omitted, schema safely defaults to empty list."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps({"document_type": "coi"})
+        )
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text")
+        res = provider.extract_insurance_data("DOC-INS-OMITTED", [page])
+
+        self.assertEqual(res.insurers, [])
+
+    def test_schema_diagnostic_3_null_insurer_value_fails_validation_safely(self):
+        """3. Null insurers value ('insurers': null) fails Pydantic validation safely without inventing values."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps({"document_type": "coi", "insurers": None})
+        )
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text")
+
+        with self.assertRaises(ExtractionSchemaValidationError) as ctx:
+            provider.extract_insurance_data("DOC-INS-NULL", [page])
+
+        self.assertIn("insurers (Input should be a valid list)", str(ctx.exception))
+        self.assertEqual(ctx.exception.error_code, "schema_validation_failed")
+
+    def test_schema_diagnostic_4_incorrect_insurer_type_string_or_dict_fails(self):
+        """4. Incorrect insurer type (single string or key-value dict) fails validation safely."""
+        provider = OpenRouterExtractionProvider(api_key="test-key")
+        page = _make_dummy_page(1, "Text")
+
+        # Case 4a: Single string instead of list
+        mock_client_str = MagicMock()
+        mock_client_str.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps({"document_type": "coi", "insurers": "Travelers Indemnity Co"})
+        )
+        provider._injected_client = mock_client_str
+        with self.assertRaises(ExtractionSchemaValidationError) as ctx_str:
+            provider.extract_insurance_data("DOC-INS-STR", [page])
+        self.assertIn("insurers (Input should be a valid list)", str(ctx_str.exception))
+
+        # Case 4b: Key-value dictionary (e.g. ACORD 25 box {'A': 'Travelers'}) instead of list
+        mock_client_dict = MagicMock()
+        mock_client_dict.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps({"document_type": "coi", "insurers": {"A": "Travelers Indemnity Co"}})
+        )
+        provider._injected_client = mock_client_dict
+        with self.assertRaises(ExtractionSchemaValidationError) as ctx_dict:
+            provider.extract_insurance_data("DOC-INS-DICT", [page])
+        self.assertIn("insurers (Input should be a valid list)", str(ctx_dict.exception))
+
+    def test_schema_diagnostic_5_valid_description_string_parses_cleanly(self):
+        """5. Valid description_of_operations string parses cleanly."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps({
+                "document_type": "coi",
+                "description_of_operations": "Project: Commercial Tower Electrical Installation",
+            })
+        )
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text")
+        res = provider.extract_insurance_data("DOC-DESC-VALID", [page])
+
+        self.assertEqual(res.description_of_operations, "Project: Commercial Tower Electrical Installation")
+
+    def test_schema_diagnostic_6_missing_description_defaults_none(self):
+        """6. When description_of_operations is omitted, schema safely defaults to None."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps({"document_type": "coi"})
+        )
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text")
+        res = provider.extract_insurance_data("DOC-DESC-OMITTED", [page])
+
+        self.assertIsNone(res.description_of_operations)
+
+    def test_schema_diagnostic_7_null_description_parses_cleanly(self):
+        """7. Null description_of_operations ('description_of_operations': null) parses cleanly as None."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps({"document_type": "coi", "description_of_operations": None})
+        )
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text")
+        res = provider.extract_insurance_data("DOC-DESC-NULL", [page])
+
+        self.assertIsNone(res.description_of_operations)
+
+    def test_schema_diagnostic_8_incorrect_description_type_dict_fails(self):
+        """8. Incorrect description_of_operations (nested object/evidence) fails validation safely."""
+        provider = OpenRouterExtractionProvider(api_key="test-key")
+        page = _make_dummy_page(1, "Text")
+
+        # Nested evidence object returned by LLM
+        mock_client_obj = MagicMock()
+        mock_client_obj.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps({
+                "document_type": "coi",
+                "description_of_operations": {
+                    "text": "Project: Commercial Tower",
+                    "evidence": {"page_number": 1, "source_text": "Commercial Tower"},
+                },
+            })
+        )
+        provider._injected_client = mock_client_obj
+        with self.assertRaises(ExtractionSchemaValidationError) as ctx_obj:
+            provider.extract_insurance_data("DOC-DESC-OBJ", [page])
+        self.assertIn("description_of_operations (Input should be a valid string)", str(ctx_obj.exception))
+
+    def test_schema_diagnostic_9_malformed_json_fails_safely(self):
+        """9. Broken non-JSON model output fails safely with code invalid_json."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            "{'document_type': 'coi', unquoted_broken_json"
+        )
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text")
+
+        with self.assertRaises(ExtractionSchemaValidationError) as ctx:
+            provider.extract_insurance_data("DOC-MALFORMED", [page])
+        self.assertEqual(ctx.exception.error_code, "invalid_json")
+
+    def test_schema_diagnostic_10_unsupported_evidence_never_invented(self):
+        """10. Unsupported evidence (corrupted quote or invalid page) routes to UNCERTAIN without inventing values."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps({
+                "document_type": "coi",
+                "named_insured": {
+                    "name": "Apex Electrical Contractors LLC",
+                    "evidence": {
+                        "page_number": 1,
+                        "source_text": "NON_EXISTENT_QUOTE_THAT_IS_NOT_ON_PAGE",
+                    },
+                },
+            })
+        )
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        pipeline = ExtractionPipelineService(extraction_provider=provider)
+
+        inspection = PDFDocumentInspection(
+            document_id="DOC-UNSUPPORTED-EV",
+            filename="synthetic.pdf",
+            file_size_bytes=1000,
+            content_hash_sha256="dummy",
+            page_count=1,
+            pages=[_make_dummy_page(1, "Different text on page entirely")],
+            classified_type=DocumentType.COI,
+            classification_confidence=1.0,
+            classification_reason="test",
+        )
+        res = pipeline.process_inspection(inspection, "SUB-01")
+
+        # Must not invent quotes; must route to UNCERTAIN with unverified evidence
+        self.assertIsNotNone(res.document_set)
+        insured = res.document_set.named_insured
+        self.assertEqual(insured.extraction_status, ExtractionStatus.UNCERTAIN)
+        self.assertIsNone(insured.evidence)
+
+    # ========================================================================
+    # Phase 3B: OpenRouter Prompt Contract Verification Tests
+    # ========================================================================
+
+    def test_phase3b_prompt_explicitly_specifies_insurers_array_requirements(self):
+        """Phase 3B: Prompt explicitly specifies insurers must be array of strings, [] if none, never null/str/dict."""
+        from app.extraction.providers.openrouter import OPENROUTER_SYSTEM_PROMPT
+
+        prompt_lower = OPENROUTER_SYSTEM_PROMPT.lower()
+        self.assertIn('"insurers"', prompt_lower)
+        self.assertIn("array of strings", prompt_lower)
+        self.assertIn("empty array []", prompt_lower)
+        self.assertIn("never return null", prompt_lower)
+        self.assertIn("single string", prompt_lower)
+        self.assertIn("dictionary", prompt_lower)
+
+    def test_phase3b_prompt_explicitly_specifies_description_string_requirements(self):
+        """Phase 3B: Prompt explicitly specifies description_of_operations must be plain string or null."""
+        from app.extraction.providers.openrouter import OPENROUTER_SYSTEM_PROMPT
+
+        prompt_lower = OPENROUTER_SYSTEM_PROMPT.lower()
+        self.assertIn('"description_of_operations"', prompt_lower)
+        self.assertIn("plain json string", prompt_lower)
+        self.assertIn("null if blank", prompt_lower)
+        self.assertIn("never return an evidence object, dictionary, or array", prompt_lower)
+
+    def test_phase3b_prompt_instructs_evidence_strictly_in_designated_structures(self):
+        """Phase 3B: Prompt explicitly restricts evidence to designated sub-objects and forbids label-only proof."""
+        from app.extraction.providers.openrouter import OPENROUTER_SYSTEM_PROMPT
+
+        prompt_lower = OPENROUTER_SYSTEM_PROMPT.lower()
+        self.assertIn("evidence belongs strictly in dedicated \"evidence\" sub-objects", prompt_lower)
+        self.assertIn("do not invent quotations", prompt_lower)
+        self.assertIn("isolated form labels as proof", prompt_lower)
+
+    def test_phase3b_schema_derived_payload_passes_provider_validation(self):
+        """Phase 3B: A payload constructed following the prompt schema validates cleanly against RawInsuranceExtraction."""
+        schema_derived_payload = {
+            "document_type": "coi",
+            "named_insured": {
+                "name": "Acme Construction LLC",
+                "address": "123 Main St, Austin, TX",
+                "evidence": {
+                    "page_number": 1,
+                    "source_text": "INSURED: Acme Construction LLC",
+                    "confidence": 1.0,
+                },
+                "confidence": 1.0,
+            },
+            "certificate_holder": {
+                "name": "General Contractor Corp",
+                "address": "500 Builder Way, Dallas, TX",
+                "evidence": {
+                    "page_number": 1,
+                    "source_text": "CERTIFICATE HOLDER: General Contractor Corp",
+                    "confidence": 1.0,
+                },
+                "confidence": 1.0,
+            },
+            "producer": None,
+            "insurers": ["Travelers Indemnity Co"],
+            "coverages": [
+                {
+                    "coverage_type": "general_liability",
+                    "policy_number": "GL-98765432",
+                    "insurer_name": "Travelers Indemnity Co",
+                    "each_occurrence": "$1,000,000",
+                    "general_aggregate": "$2,000,000",
+                    "products_completed_ops": "$2,000,000",
+                    "personal_adv_injury": "$1,000,000",
+                    "effective_date": "01/01/2025",
+                    "expiration_date": "01/01/2026",
+                    "evidence": {
+                        "page_number": 1,
+                        "source_text": "COMMERCIAL GENERAL LIABILITY",
+                        "confidence": 1.0,
+                    },
+                    "confidence": 1.0,
+                }
+            ],
+            "endorsements": [],
+            "description_of_operations": "Project: Commercial Tower Framing and Drywall",
+            "raw_contradictions": [],
+            "is_document_set_complete": True,
+        }
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion(
+            json.dumps(schema_derived_payload)
+        )
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page = _make_dummy_page(1, "Text")
+        res = provider.extract_insurance_data("DOC-SCHEMA-DERIVED", [page])
+
+        self.assertEqual(res.document_type, "coi")
+        self.assertEqual(res.named_insured.name, "Acme Construction LLC")
+        self.assertEqual(res.insurers, ["Travelers Indemnity Co"])
+        self.assertEqual(res.description_of_operations, "Project: Commercial Tower Framing and Drywall")
+        self.assertEqual(res.coverages[0].each_occurrence, "$1,000,000")
 
 
 if __name__ == "__main__":

@@ -50,17 +50,106 @@ def _format_pydantic_validation_error(val_err: Exception) -> str:
 
 
 OPENROUTER_SYSTEM_PROMPT = """You are an expert insurance document extraction engine for Certificates of Insurance (COI / ACORD 25) and endorsements.
-Your job is to extract structured insurance information with exact source evidence text into a valid JSON object.
+Your job is to extract structured insurance information with exact source evidence text into a single valid JSON object matching the RawInsuranceExtraction schema.
 
-RULES:
-1. Extract ONLY information explicitly present in the document.
-2. If a field is not present or blank, return null / None. NEVER guess, assume, or fabricate.
-3. For every extracted field, quote the exact verbatim text from the page where it was found (source_text) and the 1-indexed page_number.
-4. If a value is ambiguous or unclear, provide your best reading and note lower confidence (0.0 to 1.0).
-5. Extract all sub-limits in their exact raw string representation (e.g. '$1,000,000', '$2,000,000', '1,000,000', '$500,000').
-6. For dates, extract raw date strings as printed (e.g. '01/01/2025', 'Jan 1, 2025').
-7. For endorsements, determine whether blanket automatic wording is used ('is_blanket') or if specific entities are scheduled.
-8. Output ONLY a single valid JSON object matching the RawInsuranceExtraction schema. Do not enclose in markdown if possible.
+EXTRACTION & EVIDENCE RULES:
+1. Extract ONLY information explicitly present in the document. NEVER guess, assume, or fabricate.
+2. For every field with an evidence requirement, quote the exact verbatim text from the page (source_text) and the 1-indexed page_number. Evidence belongs STRICTLY in dedicated "evidence" sub-objects. Do not invent quotations or treat isolated form labels as proof of an extracted value.
+3. Limits: Extract all monetary amounts as printed raw strings (e.g. '$1,000,000', '$2,000,000', '1,000,000', '$500,000').
+4. Dates: Extract policy dates as printed raw strings (e.g. '01/01/2025', 'Jan 1, 2025').
+5. Endorsements: Identify type ('additional_insured', 'waiver_of_subrogation', 'primary_noncontributory', 'other'), form numbers ('CG 20 10 04 13'), and whether wording is automatic/blanket ('is_blanket': true/false).
+
+FIELD TYPE SPECIFICATIONS (CRITICAL):
+- "insurers": MUST ALWAYS be a JSON array of strings (e.g. ["Travelers Indemnity Co"]). If no insurers are listed or identified, return an empty array []. NEVER return null, a single string, or a dictionary.
+- "description_of_operations": MUST be a plain JSON string (e.g. "Project: Commercial Tower framing") or null if blank. NEVER return an evidence object, dictionary, or array for this field.
+- "coverages": Array of coverage section objects. Limits (e.g. "each_occurrence", "general_aggregate") and dates ("effective_date", "expiration_date") are direct fields on each coverage object, NOT inside a nested "limits" dict.
+- "raw_contradictions": Array of strings describing contradictory statements if present, else [].
+- "is_document_set_complete": Boolean, true if standard COI requirements appear complete.
+
+EXACT JSON SCHEMA STRUCTURE:
+{
+  "document_type": "coi",
+  "named_insured": {
+    "name": "string or null",
+    "address": "string or null",
+    "evidence": {
+      "page_number": 1,
+      "source_text": "exact quote from document",
+      "confidence": 1.0
+    },
+    "confidence": 1.0
+  },
+  "certificate_holder": {
+    "name": "string or null",
+    "address": "string or null",
+    "evidence": {
+      "page_number": 1,
+      "source_text": "exact quote from document",
+      "confidence": 1.0
+    },
+    "confidence": 1.0
+  },
+  "producer": {
+    "name": "string or null",
+    "address": "string or null",
+    "evidence": {
+      "page_number": 1,
+      "source_text": "exact quote from document",
+      "confidence": 1.0
+    },
+    "confidence": 1.0
+  },
+  "insurers": ["Insurer Name 1", "Insurer Name 2"],
+  "coverages": [
+    {
+      "coverage_type": "general_liability",
+      "policy_number": "string or null",
+      "insurer_name": "string or null",
+      "each_occurrence": "$1,000,000",
+      "general_aggregate": "$2,000,000",
+      "products_completed_ops": "string or null",
+      "personal_adv_injury": "string or null",
+      "combined_single_limit": "string or null",
+      "per_accident": "string or null",
+      "disease_each_employee": "string or null",
+      "disease_policy_limit": "string or null",
+      "damage_to_rented_premises": "string or null",
+      "medical_expense": "string or null",
+      "effective_date": "01/01/2025",
+      "expiration_date": "01/01/2026",
+      "evidence": {
+        "page_number": 1,
+        "source_text": "exact quote from document",
+        "confidence": 1.0
+      },
+      "confidence": 1.0
+    }
+  ],
+  "endorsements": [
+    {
+      "endorsement_type": "additional_insured",
+      "form_number": "CG 20 10 04 13",
+      "title": "string or null",
+      "wording": "string or null",
+      "applicable_policy": "string or null",
+      "named_entities": [],
+      "key_terms": [],
+      "is_blanket": false,
+      "is_coi_checkbox_only": false,
+      "evidence": {
+        "page_number": 1,
+        "source_text": "exact quote from document",
+        "confidence": 1.0
+      },
+      "confidence": 1.0
+    }
+  ],
+  "description_of_operations": "plain text string or null",
+  "raw_contradictions": [],
+  "is_document_set_complete": true
+}
+
+Output ONLY the JSON object. Do not include markdown code block formatting or additional conversational commentary.
 """
 
 
@@ -291,10 +380,14 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
                         request_id = None
 
                 # Compatibility fix: if model rejects response_format, retry request without it
-                if use_response_format and (
-                    status_code == 400
-                    or "response_format" in err_lower
+                is_response_format_error = (
+                    "response_format" in err_lower
                     or "json_object" in err_lower
+                    or ("unsupported" in err_lower and "format" in err_lower)
+                )
+                if use_response_format and (
+                    (status_code == 400 and is_response_format_error)
+                    or ("response_format" in err_lower and ("not supported" in err_lower or "unsupported" in err_lower))
                 ):
                     logger.info("Model '%s' rejected response_format; retrying without response_format option.", self.model_name)
                     use_response_format = False

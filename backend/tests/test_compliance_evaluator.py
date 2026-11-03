@@ -752,5 +752,335 @@ class TestComplianceEvaluator(unittest.TestCase):
         self.assertEqual(result.overall_status, ComplianceStatus.COMPLIANT)
 
 
+    # =========================================================================
+    # Phase 4 Hardening: Effective Date Regression Tests
+    # =========================================================================
+
+    def test_effective_date_active_and_valid_positive(self):
+        """Valid effective date prior to evaluation date and before expiration date -> COMPLIANT."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_EFF_VALID",
+            rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+            description="Policy effective date valid",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+        )
+        cov = sample_gl_coverage(eff=date(2025, 1, 1), exp=date(2026, 1, 1))
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov)
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(len(result.findings), 1)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.COMPLIANT)
+        self.assertEqual(finding.reason_code, "EFFECTIVE_DATE_VALID")
+        self.assertFalse(finding.requires_human_review)
+        self.assertEqual(result.overall_status, ComplianceStatus.COMPLIANT)
+
+    def test_effective_date_equal_to_evaluation_date(self):
+        """Boundary: Policy effective date equals evaluation date -> COMPLIANT (policy starts today)."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_EFF_TODAY",
+            rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+            description="Policy starts today",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+        )
+        cov = sample_gl_coverage(eff=EVAL_DATE, exp=date(2026, 1, 1))
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov)
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.COMPLIANT)
+        self.assertEqual(finding.reason_code, "EFFECTIVE_DATE_VALID")
+        self.assertFalse(finding.requires_human_review)
+
+    def test_effective_date_low_confidence(self):
+        """Effective date with confidence below threshold (0.45 < 0.70) -> UNABLE_TO_DETERMINE."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_EFF_LOW_CONF",
+            rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+            description="Policy effective date check",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+        )
+        cov = sample_gl_coverage(eff=date(2025, 1, 1), exp=date(2026, 1, 1))
+        cov.effective_date.confidence = 0.45
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov)
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.UNABLE_TO_DETERMINE)
+        self.assertEqual(finding.reason_code, "EFFECTIVE_DATE_CONFIDENCE_LOW")
+        self.assertTrue(finding.requires_human_review)
+
+    def test_effective_date_uncertain_extraction_status(self):
+        """Effective date coverage with UNCERTAIN extraction status -> UNABLE_TO_DETERMINE."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_EFF_UNCERTAIN",
+            rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+            description="Policy effective date check",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+        )
+        cov = sample_gl_coverage(eff=date(2025, 1, 1), exp=date(2026, 1, 1), status=ExtractionStatus.UNCERTAIN)
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov)
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.UNABLE_TO_DETERMINE)
+        self.assertEqual(finding.reason_code, "EFFECTIVE_DATE_CONFIDENCE_LOW")
+        self.assertTrue(finding.requires_human_review)
+
+    def test_effective_date_mandatory_evidence_missing(self):
+        """Effective date with mandatory_evidence=True but no evidence -> MISSING_EVIDENCE."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_EFF_MAND_EV",
+            rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+            description="Effective date requires evidence",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            mandatory_evidence=True,
+        )
+        cov = sample_gl_coverage(eff=date(2025, 1, 1), exp=date(2026, 1, 1))
+        cov.evidence = None
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov)
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.MISSING_EVIDENCE)
+        self.assertEqual(finding.reason_code, "EFFECTIVE_DATE_EVIDENCE_MISSING")
+        self.assertTrue(finding.requires_human_review)
+
+    # =========================================================================
+    # Phase 4 Hardening: Endorsement Uncertainty Regression Tests
+    # =========================================================================
+
+    def test_endorsement_low_confidence(self):
+        """Endorsement with confidence below threshold (0.50 < 0.70) -> UNABLE_TO_DETERMINE."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_LOW_CONF",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured required",
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            confidence=0.50,
+            evidence=make_evidence(text="CG 20 10 Additional Insured"),
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[end])
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.UNABLE_TO_DETERMINE)
+        self.assertEqual(finding.reason_code, "ENDORSEMENT_CONFIDENCE_LOW")
+        self.assertTrue(finding.requires_human_review)
+
+    def test_endorsement_uncertain_extraction_status(self):
+        """Endorsement with UNCERTAIN extraction status -> UNABLE_TO_DETERMINE."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_UNCERTAIN",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured required",
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            extraction_status=ExtractionStatus.UNCERTAIN,
+            evidence=make_evidence(text="CG 20 10 Additional Insured"),
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[end])
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.UNABLE_TO_DETERMINE)
+        self.assertEqual(finding.reason_code, "ENDORSEMENT_CONFIDENCE_LOW")
+        self.assertTrue(finding.requires_human_review)
+
+    def test_endorsement_quote_present_unverified_support(self):
+        """Endorsement with QUOTE_PRESENT_UNVERIFIED_SUPPORT status -> REQUIRES_HUMAN_REVIEW."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_UNVERIFIED_SUPP",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured required",
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            extraction_status=ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT,
+            evidence=make_evidence(text="General Liability Policy Schedule"),
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[end])
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "ENDORSEMENT_EVIDENCE_SUPPORT_UNVERIFIED")
+        self.assertTrue(finding.requires_human_review)
+
+    def test_endorsement_not_found_when_document_set_complete(self):
+        """Endorsement missing when document set is complete -> MISSING_EVIDENCE (ENDORSEMENT_NOT_FOUND)."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_MISSING",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured required",
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[], is_complete=True)
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.MISSING_EVIDENCE)
+        self.assertEqual(finding.reason_code, "ENDORSEMENT_NOT_FOUND")
+        self.assertTrue(finding.requires_human_review)
+
+    # =========================================================================
+    # Phase 4 Hardening: Named Insured Empty / Whitespace-Only Tests
+    # =========================================================================
+
+    def test_named_insured_empty_string_classified_as_missing_evidence(self):
+        """Entity exists with empty string name -> MISSING_EVIDENCE (not mismatch)."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_NI_EMPTY",
+            rule_type=RequirementType.NAMED_INSURED,
+            description="Named insured match",
+            required_entity_name="Apex Electrical Contractors LLC",
+        )
+        doc_set = sample_subcontractor_document_set(named_insured_name="")
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.MISSING_EVIDENCE)
+        self.assertEqual(finding.reason_code, "NAMED_INSURED_NOT_FOUND")
+        self.assertTrue(finding.requires_human_review)
+
+    def test_named_insured_whitespace_only_classified_as_missing_evidence(self):
+        """Entity exists with whitespace-only name -> MISSING_EVIDENCE (not mismatch)."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_NI_WS",
+            rule_type=RequirementType.NAMED_INSURED,
+            description="Named insured match",
+            required_entity_name="Apex Electrical Contractors LLC",
+        )
+        doc_set = sample_subcontractor_document_set(named_insured_name="   \t  \n  ")
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.MISSING_EVIDENCE)
+        self.assertEqual(finding.reason_code, "NAMED_INSURED_NOT_FOUND")
+        self.assertTrue(finding.requires_human_review)
+
+    def test_named_insured_genuine_mismatch_preserves_non_compliant(self):
+        """A genuine mismatch against a different legal entity remains NON_COMPLIANT."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_NI_MISMATCH",
+            rule_type=RequirementType.NAMED_INSURED,
+            description="Named insured match",
+            required_entity_name="Apex Electrical Contractors LLC",
+        )
+        doc_set = sample_subcontractor_document_set(named_insured_name="Zenith Plumbing Inc")
+
+        result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        finding = result.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.NON_COMPLIANT)
+        self.assertEqual(finding.reason_code, "NAMED_INSURED_MISMATCH")
+        self.assertTrue(finding.requires_human_review)
+
+    # =========================================================================
+    # Phase 4 Hardening: Determinism & Provider-Independence Tests
+    # =========================================================================
+
+    def test_evaluator_five_repeated_evaluations_identical_output(self):
+        """Five repeated evaluations of identical inputs produce identical results (idempotence)."""
+        req1 = sample_gl_requirement(min_cents=100_000_000)
+        req2 = InsuranceRequirement(
+            requirement_id="REQ_EXP",
+            rule_type=RequirementType.POLICY_EXPIRATION,
+            description="Unexpired",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+        )
+        req3 = InsuranceRequirement(
+            requirement_id="REQ_NI",
+            rule_type=RequirementType.NAMED_INSURED,
+            description="Named insured match",
+            required_entity_name="Apex Electrical Contractors LLC",
+        )
+        reqs = [req1, req2, req3]
+        doc_set = sample_subcontractor_document_set()
+
+        first_res = self.evaluator.evaluate(doc_set, reqs, EVAL_DATE)
+
+        for i in range(4):
+            subsequent_res = self.evaluator.evaluate(doc_set, reqs, EVAL_DATE)
+            self.assertEqual(subsequent_res.overall_status, first_res.overall_status)
+            self.assertEqual(subsequent_res.requires_human_review, first_res.requires_human_review)
+            self.assertEqual(len(subsequent_res.findings), len(first_res.findings))
+            for f_sub, f_first in zip(subsequent_res.findings, first_res.findings):
+                self.assertEqual(f_sub.requirement_id, f_first.requirement_id)
+                self.assertEqual(f_sub.status, f_first.status)
+                self.assertEqual(f_sub.reason_code, f_first.reason_code)
+                self.assertEqual(f_sub.requires_human_review, f_first.requires_human_review)
+
+    def test_evaluator_requirement_ordering_independence(self):
+        """Changing the order of requirements produces identical findings and overall status."""
+        req_gl = sample_gl_requirement(min_cents=100_000_000)
+        req_exp = InsuranceRequirement(
+            requirement_id="REQ_EXP",
+            rule_type=RequirementType.POLICY_EXPIRATION,
+            description="Unexpired",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+        )
+        req_ni = InsuranceRequirement(
+            requirement_id="REQ_NI",
+            rule_type=RequirementType.NAMED_INSURED,
+            description="Named insured match",
+            required_entity_name="Apex Electrical Contractors LLC",
+        )
+
+        reqs_forward = [req_gl, req_exp, req_ni]
+        reqs_reversed = [req_ni, req_exp, req_gl]
+        reqs_permuted = [req_exp, req_ni, req_gl]
+
+        doc_set = sample_subcontractor_document_set()
+
+        res_fwd = self.evaluator.evaluate(doc_set, reqs_forward, EVAL_DATE)
+        res_rev = self.evaluator.evaluate(doc_set, reqs_reversed, EVAL_DATE)
+        res_per = self.evaluator.evaluate(doc_set, reqs_permuted, EVAL_DATE)
+
+        self.assertEqual(res_fwd.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertEqual(res_rev.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertEqual(res_per.overall_status, ComplianceStatus.COMPLIANT)
+
+        # Confirm finding status per requirement_id matches regardless of order
+        fwd_map = {f.requirement_id: f.status for f in res_fwd.findings}
+        rev_map = {f.requirement_id: f.status for f in res_rev.findings}
+        per_map = {f.requirement_id: f.status for f in res_per.findings}
+
+        self.assertEqual(fwd_map, rev_map)
+        self.assertEqual(fwd_map, per_map)
+
+    def test_evaluator_provider_independence(self):
+        """Compliance outcome depends solely on extracted document set data, not provider origin."""
+        req = sample_gl_requirement(min_cents=100_000_000)
+
+        # Simulate doc sets that could have been created by Gemini, OpenRouter, or Mock
+        # All represent identical extracted underlying insurance data
+        doc_set_gemini_equivalent = ExtractedDocumentSet(
+            subcontractor_id="SUB-GEMINI",
+            named_insured=EntityInfo(name="Apex Electrical Contractors LLC"),
+            coverages=[sample_gl_coverage(occ_cents=100_000_000)],
+        )
+        doc_set_openrouter_equivalent = ExtractedDocumentSet(
+            subcontractor_id="SUB-OPENROUTER",
+            named_insured=EntityInfo(name="Apex Electrical Contractors LLC"),
+            coverages=[sample_gl_coverage(occ_cents=100_000_000)],
+        )
+
+        res_gemini = self.evaluator.evaluate(doc_set_gemini_equivalent, [req], EVAL_DATE)
+        res_openrouter = self.evaluator.evaluate(doc_set_openrouter_equivalent, [req], EVAL_DATE)
+
+        self.assertEqual(res_gemini.overall_status, res_openrouter.overall_status)
+        self.assertEqual(res_gemini.findings[0].status, res_openrouter.findings[0].status)
+        self.assertEqual(res_gemini.findings[0].reason_code, res_openrouter.findings[0].reason_code)
+
+
 if __name__ == "__main__":
     unittest.main()

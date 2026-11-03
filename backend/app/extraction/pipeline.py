@@ -439,6 +439,7 @@ class ExtractionPipelineService:
                 is_coi_checkbox_only=raw_end.is_coi_checkbox_only,
                 evidence=ev,
                 extraction_status=status,
+                confidence=raw_end.confidence,
             )
             endorsements.append(end)
 

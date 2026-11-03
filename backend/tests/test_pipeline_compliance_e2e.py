@@ -58,9 +58,9 @@ class TestPipelineComplianceE2E(unittest.TestCase):
     # Task 2: Seven End-to-End Synthetic Scenarios
     # =========================================================================
 
-    def test_e2e_scenario_1_fully_compliant_document_set(self):
-        """Scenario 1: Clean ACORD 25 with full limits, active dates, and matching entity -> COMPLIANT."""
-        pdf_bytes = self._read_fixture("synthetic_standard_acord25.pdf")
+    def test_e2e_scenario_1_fully_compliant(self):
+        """Scenario 1: Clean multipage COI + endorsement with full limits, active dates, and matching entity -> COMPLIANT."""
+        pdf_bytes = self._read_fixture("synthetic_multipage_coi_endorsement.pdf")
         inspection = self.pdf_processor.process_pdf(pdf_bytes, document_id="E2E-DOC-01")
 
         canned_extraction = RawInsuranceExtraction(
@@ -86,7 +86,17 @@ class TestPipelineComplianceE2E(unittest.TestCase):
                     ),
                 )
             ],
-            endorsements=[],
+            endorsements=[
+                RawEndorsement(
+                    endorsement_type="additional_insured",
+                    form_number="CG 20 10 04 13",
+                    confidence=0.95,
+                    evidence=RawEvidenceQuote(
+                        page_number=2,
+                        source_text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13",
+                    ),
+                )
+            ],
             raw_contradictions=[],
             is_document_set_complete=True,
         )
@@ -118,6 +128,12 @@ class TestPipelineComplianceE2E(unittest.TestCase):
                 description="Named insured must match Apex Electrical Contractors LLC",
                 required_entity_name="Apex Electrical Contractors LLC",
             ),
+            InsuranceRequirement(
+                requirement_id="REQ_AI",
+                rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+                description="Additional Insured endorsement required",
+                required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            ),
         ]
 
         review_result = self.evaluator.evaluate(
@@ -128,11 +144,12 @@ class TestPipelineComplianceE2E(unittest.TestCase):
 
         self.assertEqual(review_result.overall_status, ComplianceStatus.COMPLIANT)
         self.assertFalse(review_result.requires_human_review)
-        self.assertEqual(len(review_result.findings), 3)
+        self.assertEqual(len(review_result.findings), 4)
         self.assertTrue(all(f.status == ComplianceStatus.COMPLIANT for f in review_result.findings))
         self.assertEqual(review_result.findings[0].reason_code, "LIMIT_MEETS_OR_EXCEEDS_MINIMUM")
         self.assertEqual(review_result.findings[1].reason_code, "POLICY_ACTIVE_AND_CURRENT")
         self.assertEqual(review_result.findings[2].reason_code, "NAMED_INSURED_EXACT_MATCH")
+        self.assertEqual(review_result.findings[3].reason_code, "ENDORSEMENT_VERIFIED")
 
     def test_e2e_scenario_2_insufficient_coverage_limit(self):
         """Scenario 2: Extracted limit ($1M) is below configured required minimum ($2M) -> NON_COMPLIANT."""
@@ -366,6 +383,24 @@ class TestPipelineComplianceE2E(unittest.TestCase):
 
         canned_extraction = RawInsuranceExtraction(
             document_type="coi",
+            named_insured=RawEntityExtraction(
+                name="Apex Electrical Contractors LLC",
+                evidence=RawEvidenceQuote(
+                    page_number=1,
+                    source_text="INSURED: Apex Electrical Contractors LLC",
+                ),
+            ),
+            coverages=[
+                RawCoverageSection(
+                    coverage_type="general_liability",
+                    policy_number="GL-98765432",
+                    each_occurrence="$1,000,000",
+                    evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="EACH OCCURRENCE: $1,000,000",
+                    ),
+                )
+            ],
             endorsements=[],
             is_document_set_complete=False,  # Referenced endorsement pages missing
         )
@@ -374,8 +409,18 @@ class TestPipelineComplianceE2E(unittest.TestCase):
             extraction_provider=MockExtractionProvider(canned_response=canned_extraction)
         )
         pipeline_result = pipeline.process_inspection(inspection, subcontractor_id="SUB-07")
+        self.assertIsNotNone(pipeline_result.document_set)
+        self.assertFalse(pipeline_result.document_set.is_document_set_complete)
 
-        requirement = InsuranceRequirement(
+        requirement_gl = InsuranceRequirement(
+            requirement_id="REQ_GL_LIMIT",
+            rule_type=RequirementType.COVERAGE_LIMIT,
+            description="GL Each Occurrence >= $1,000,000",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            limit_field=LimitField.EACH_OCCURRENCE,
+            min_amount_cents=100_000_000,
+        )
+        requirement_ai = InsuranceRequirement(
             requirement_id="REQ_AI",
             rule_type=RequirementType.ENDORSEMENT_PRESENCE,
             description="Additional Insured endorsement required",
@@ -384,20 +429,37 @@ class TestPipelineComplianceE2E(unittest.TestCase):
 
         review_result = self.evaluator.evaluate(
             document_set=pipeline_result.document_set,
-            requirements=[requirement],
+            requirements=[requirement_gl, requirement_ai],
             evaluation_date=self.evaluation_date,
         )
 
+        # 1. GL coverage requirement is independently evaluated and compliant
+        self.assertEqual(review_result.findings[0].status, ComplianceStatus.COMPLIANT)
+        self.assertEqual(review_result.findings[0].reason_code, "LIMIT_MEETS_OR_EXCEEDS_MINIMUM")
+
+        # 2. Case B: Incomplete document set with missing endorsement cannot conclude definitive absence
+        self.assertEqual(review_result.findings[1].status, ComplianceStatus.UNABLE_TO_DETERMINE)
+        self.assertEqual(review_result.findings[1].reason_code, "INCOMPLETE_DOCUMENT_SET_ENDORSEMENT_UNKNOWN")
+
+        # 3. Overall review status is UNABLE_TO_DETERMINE and requires human review
         self.assertEqual(review_result.overall_status, ComplianceStatus.UNABLE_TO_DETERMINE)
         self.assertTrue(review_result.requires_human_review)
-        self.assertEqual(review_result.findings[0].status, ComplianceStatus.UNABLE_TO_DETERMINE)
-        self.assertEqual(review_result.findings[0].reason_code, "INCOMPLETE_DOCUMENT_SET_ENDORSEMENT_UNKNOWN")
+
+        # 4. Direct contrast with Case A: Complete document set with missing endorsement yields MISSING_EVIDENCE
+        complete_doc_set = pipeline_result.document_set.model_copy(update={"is_document_set_complete": True})
+        case_a_result = self.evaluator.evaluate(
+            document_set=complete_doc_set,
+            requirements=[requirement_ai],
+            evaluation_date=self.evaluation_date,
+        )
+        self.assertEqual(case_a_result.findings[0].status, ComplianceStatus.MISSING_EVIDENCE)
+        self.assertEqual(case_a_result.findings[0].reason_code, "ENDORSEMENT_NOT_FOUND")
 
     # =========================================================================
     # Task 3: Endorsement Confidence Regression Tests
     # =========================================================================
 
-    def test_endorsement_confidence_low_survives_normalization_and_routes_to_unable_to_determine(self):
+    def test_endorsement_confidence_low_survives_pipeline_and_triggers_human_review(self):
         """Raw endorsement confidence of 0.40 survives pipeline normalization and prevents COMPLIANT status."""
         pdf_bytes = self._read_fixture("synthetic_multipage_coi_endorsement.pdf")
         inspection = self.pdf_processor.process_pdf(pdf_bytes, document_id="E2E-END-CONF-01")
@@ -408,7 +470,7 @@ class TestPipelineComplianceE2E(unittest.TestCase):
                 RawEndorsement(
                     endorsement_type="additional_insured",
                     form_number="CG 20 10 04 13",
-                    confidence=0.40,  # Low confidence
+                    confidence=0.40,  # Low confidence (< 0.70 threshold)
                     evidence=RawEvidenceQuote(
                         page_number=2,
                         source_text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13",
@@ -446,7 +508,7 @@ class TestPipelineComplianceE2E(unittest.TestCase):
         self.assertEqual(review_result.findings[0].status, ComplianceStatus.UNABLE_TO_DETERMINE)
         self.assertEqual(review_result.findings[0].reason_code, "ENDORSEMENT_CONFIDENCE_LOW")
 
-    def test_endorsement_confidence_high_survives_normalization_and_produces_compliant(self):
+    def test_endorsement_confidence_high_survives_pipeline_and_complies(self):
         """Raw endorsement confidence of 0.95 produces COMPLIANT with reason code ENDORSEMENT_VERIFIED."""
         pdf_bytes = self._read_fixture("synthetic_multipage_coi_endorsement.pdf")
         inspection = self.pdf_processor.process_pdf(pdf_bytes, document_id="E2E-END-CONF-02")
@@ -457,7 +519,7 @@ class TestPipelineComplianceE2E(unittest.TestCase):
                 RawEndorsement(
                     endorsement_type="additional_insured",
                     form_number="CG 20 10 04 13",
-                    confidence=0.95,  # High confidence
+                    confidence=0.95,  # High confidence (>= 0.70 threshold)
                     evidence=RawEvidenceQuote(
                         page_number=2,
                         source_text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13",
@@ -493,8 +555,8 @@ class TestPipelineComplianceE2E(unittest.TestCase):
         self.assertEqual(review_result.findings[0].status, ComplianceStatus.COMPLIANT)
         self.assertEqual(review_result.findings[0].reason_code, "ENDORSEMENT_VERIFIED")
 
-    def test_endorsement_confidence_omitted_preserves_optional_field_behavior(self):
-        """When raw endorsement confidence is None, confidence defaults to None and passes if evidence is verified."""
+    def test_endorsement_confidence_omitted_defaults_to_none_and_safely_evaluated(self):
+        """When raw endorsement confidence is None, confidence defaults to None; safely evaluated and does not treat missing confidence as verified evidence."""
         pdf_bytes = self._read_fixture("synthetic_multipage_coi_endorsement.pdf")
         inspection = self.pdf_processor.process_pdf(pdf_bytes, document_id="E2E-END-CONF-03")
 
@@ -521,10 +583,10 @@ class TestPipelineComplianceE2E(unittest.TestCase):
         doc_set = pipeline_result.document_set
         self.assertIsNotNone(doc_set)
 
-        # 1. Verify confidence is None
+        # 1. Verify confidence is None and no TypeError occurs during processing
         self.assertIsNone(doc_set.endorsements[0].confidence)
 
-        # 2. Verify compliance evaluation succeeds when evidence is verified and no confidence penalty applies
+        # 2. Subcase A: With verified evidence quote on page, evaluation passes without confidence penalty
         req = InsuranceRequirement(
             requirement_id="REQ_AI_CONF",
             rule_type=RequirementType.ENDORSEMENT_PRESENCE,
@@ -532,10 +594,27 @@ class TestPipelineComplianceE2E(unittest.TestCase):
             required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
         )
         review_result = self.evaluator.evaluate(doc_set, [req], self.evaluation_date)
-
         self.assertEqual(review_result.overall_status, ComplianceStatus.COMPLIANT)
         self.assertFalse(review_result.requires_human_review)
         self.assertEqual(review_result.findings[0].reason_code, "ENDORSEMENT_VERIFIED")
+
+        # 3. Subcase B: Missing confidence does NOT act as verified evidence if quote support is unverified
+        unverified_end = doc_set.endorsements[0].model_copy(
+            update={"extraction_status": ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT}
+        )
+        unverified_doc_set = doc_set.model_copy(update={"endorsements": [unverified_end]})
+        unverified_review = self.evaluator.evaluate(unverified_doc_set, [req], self.evaluation_date)
+        self.assertEqual(unverified_review.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(unverified_review.requires_human_review)
+        self.assertEqual(unverified_review.findings[0].reason_code, "ENDORSEMENT_EVIDENCE_SUPPORT_UNVERIFIED")
+
+        # 4. Subcase C: Missing confidence does NOT act as verified evidence if evidence is completely absent
+        no_ev_end = doc_set.endorsements[0].model_copy(update={"evidence": None})
+        no_ev_doc_set = doc_set.model_copy(update={"endorsements": [no_ev_end]})
+        no_ev_review = self.evaluator.evaluate(no_ev_doc_set, [req], self.evaluation_date)
+        self.assertEqual(no_ev_review.overall_status, ComplianceStatus.MISSING_EVIDENCE)
+        self.assertTrue(no_ev_review.requires_human_review)
+        self.assertEqual(no_ev_review.findings[0].reason_code, "ENDORSEMENT_EVIDENCE_TEXT_MISSING")
 
 
 if __name__ == "__main__":

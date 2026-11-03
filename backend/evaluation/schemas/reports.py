@@ -156,3 +156,136 @@ class BenchmarkReport(BaseModel):
         default_factory=dict,
         description="Environment metadata with all secrets and keys strictly redacted"
     )
+
+
+# ============================================================================
+# Multi-Document Scenario & Compliance Reporting Schemas
+# ============================================================================
+
+class SafetyMetricResult(BaseModel):
+    """Detailed calculation for high-stakes safety rates (FCR and UCR)."""
+    metric_name: str
+    numerator: int = 0
+    denominator: int = 0
+    rate_percentage: Optional[float] = None
+    rate_string: str = "N/A"
+    affected_scenario_ids: List[str] = Field(default_factory=list)
+    incident_details: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class FindingMetricStats(BaseModel):
+    """Aggregate finding-level compliance evaluation statistics."""
+    total_findings: int = 0
+    exact_status_matches: int = 0
+    reason_code_matches: int = 0
+    human_review_matches: int = 0
+    precision: float = 0.0
+    recall: float = 0.0
+    f1_score: float = 0.0
+    exact_status_accuracy: float = 0.0
+    reason_code_accuracy: float = 0.0
+    human_review_accuracy: float = 0.0
+
+
+class SubmissionMetricStats(BaseModel):
+    """Aggregate submission-level multi-class compliance metrics."""
+    total_scenarios: int = 0
+    exact_status_matches: int = 0
+    overall_accuracy: float = 0.0
+    macro_f1: float = 0.0
+    weighted_f1: float = 0.0
+    confusion_matrix_4class: Dict[str, Dict[str, int]] = Field(default_factory=dict)
+    class_metrics: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+
+
+class HumanReviewMetricStats(BaseModel):
+    """Uncertainty routing and escalation performance statistics."""
+    uncertainty_recall: float = 0.0
+    human_review_precision: float = 0.0
+    unnecessary_review_rate: float = 0.0
+    missed_review_rate: float = 0.0
+    total_human_review_ground_truth: int = 0
+    escalated_to_human_review_count: int = 0
+    unnecessary_review_count: int = 0
+    missed_review_count: int = 0
+
+
+class ScenarioEvidenceMetricStats(BaseModel):
+    """Fine-grained evidence grounding and semantic support statistics."""
+    total_evidence_claims: int = 0
+    exact_quotation_matches: int = 0
+    quotation_match_rate: float = 0.0
+    document_attribution_accuracy: float = 0.0
+    page_attribution_accuracy: float = 0.0
+    claim_to_evidence_support_rate: float = 0.0
+    unsupported_claim_rate: float = 0.0
+    missing_evidence_rate: float = 0.0
+    citation_completeness_rate: float = 0.0
+    text_present_claim_supported_count: int = 0
+    text_present_claim_unsupported_count: int = 0
+    text_absent_count: int = 0
+    wrong_page_count: int = 0
+    wrong_document_count: int = 0
+    conflicting_evidence_count: int = 0
+
+
+class ScenarioFindingResult(BaseModel):
+    """Per-finding evaluation comparison."""
+    requirement_id: str
+    rule_type: str
+    expected_status: str
+    predicted_status: str
+    status_matched: bool = False
+    expected_reason_code: str
+    predicted_reason_code: str
+    reason_code_matched: bool = False
+    expected_human_review: bool = False
+    predicted_human_review: bool = False
+    human_review_matched: bool = False
+    evidence_grounding_status: str = "supported"
+    explanation: Optional[str] = None
+
+
+class ScenarioEvaluationResult(BaseModel):
+    """Evaluation result for an individual multi-document scenario."""
+    scenario_id: str
+    title: str
+    expected_status: str
+    predicted_status: Optional[str] = None
+    status_matched: bool = False
+    expected_requires_human_review: bool = False
+    predicted_requires_human_review: bool = False
+    human_review_matched: bool = False
+    is_unsafe_pass: bool = False
+    is_false_compliant: bool = False
+    processing_status: str = "success"
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+    findings_results: List[ScenarioFindingResult] = Field(default_factory=list)
+    execution_time_seconds: float = 0.0
+
+
+class ScenarioBenchmarkReport(BaseModel):
+    """Complete benchmark execution report across a multi-document cohort."""
+    model_config = {"protected_namespaces": ()}
+
+    benchmark_id: str
+    timestamp: str
+    manifest_version: str
+    manifest_hash: str
+    provider_name: str
+    model_name: Optional[str] = None
+    total_scenarios: int
+    successful_scenarios: int = 0
+    failed_scenarios: int = 0
+    submission_metrics: SubmissionMetricStats
+    finding_metrics: FindingMetricStats
+    fcr_metric: SafetyMetricResult
+    ucr_metric: SafetyMetricResult
+    human_review_metrics: HumanReviewMetricStats
+    evidence_metrics: ScenarioEvidenceMetricStats
+    scenario_results: List[ScenarioEvaluationResult] = Field(default_factory=list)
+    execution_failures: List[Dict[str, Any]] = Field(default_factory=list)
+    execution_time_seconds: float = 0.0
+    environment_metadata: Dict[str, str] = Field(default_factory=dict)
+

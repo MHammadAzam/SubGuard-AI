@@ -133,12 +133,37 @@ python -m evaluation.runners.benchmark --provider openrouter --model nvidia/nemo
 
 ## Running Tests
 
-The test suite requires Python 3.12+, Pydantic v2, PyMuPDF, google-genai, and openai. Run all 122 automated tests using standard library `unittest`:
+The test suite requires Python 3.12+, Pydantic v2, PyMuPDF, google-genai, and openai. Run all 185 automated tests using standard library `unittest`:
 
 ```bash
 cd backend
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
+
+---
+
+## Phase 6 Hardening: Evidence Integrity & Evaluation Reliability
+
+### 1. Evidence Verification Strategy
+- **Elimination of Single-Bigram Matches:** Fabricated quotations can no longer achieve verified evidence status merely by sharing a single 2-word bigram (e.g. `"liability insurance"`) with the document page.
+- **Calibrated Sequence Matching:** Quotations must match normalized continuous text or page spans. Short quotes ($\le 3$ tokens) must match as an exact continuous sequence. Longer quotes ($\ge 4$ tokens) require at least a 4-token contiguous sequence matching the page text.
+- **Ambiguous Quotations:** Quotes that fail verbatim or calibrated sequence matching are rejected (`_resolve_evidence()` returns `None`), defaulting extraction status to `ExtractionStatus.UNCERTAIN` and routing findings to `MISSING_EVIDENCE` or `UNABLE_TO_DETERMINE`.
+
+### 2. Semantic Support Rules
+- **Rejection of Standalone Generic Tokens:** Standalone words such as `"insured"`, `"additional"`, and `"primary"` are removed from endorsement semantic verification heuristics. An endorsement claim citing `"INSURED: [Contractor Name]"` is strictly flagged as `QUOTE_PRESENT_UNVERIFIED_SUPPORT`.
+- **Endorsement-Specific Indicators:** Endorsements require recognized form identifiers (e.g. `CG 20 10`, `CG 24 04`) or specific multi-word indicators (e.g. `"additional insured"`, `"scheduled person"`, `"waiver of subrogation"`, `"primary and noncontributory"`).
+
+### 3. Incomplete Document-Set Symmetry
+- **Coverage & Policy Date Symmetry:** When `is_document_set_complete=False`, missing coverages or missing policy dates return `ComplianceStatus.UNABLE_TO_DETERMINE` with reason code `INCOMPLETE_DOCUMENT_SET_COVERAGE_UNKNOWN`, rather than prematurely declaring non-compliance.
+- **Complete Sets Preserved:** When `is_document_set_complete=True`, genuinely missing coverages continue to return `ComplianceStatus.MISSING_EVIDENCE` with reason code `COVERAGE_NOT_FOUND`.
+
+### 4. Multiple Endorsement Aggregation Policy
+- **Comprehensive Evaluation:** The evaluator evaluates *all* matching endorsement records rather than silently picking the first record.
+- **Uncertainty & Conflict Propagation:** If *any* matching endorsement has unverified evidence support (`QUOTE_PRESENT_UNVERIFIED_SUPPORT`), partial extraction (`PARTIAL`), low confidence / uncertainty (`CONFIDENCE_LOW`), or conflicting policy numbers (`CONTRADICTORY_ENDORSEMENTS_FOUND`), the finding deterministically escalates to `REQUIRES_HUMAN_REVIEW` or `UNABLE_TO_DETERMINE`.
+- **Blanket Requirement:** If any matching endorsement is blanket, `BLANKET_ENDORSEMENT_REQUIRES_CONTRACT_CHECK` is enforced.
+
+### 5. Partial Extraction Protection
+- Incomplete extraction objects flagged with `ExtractionStatus.PARTIAL` across coverage limits, expiration dates, effective dates, named insured, or endorsements deterministically route to `ComplianceStatus.REQUIRES_HUMAN_REVIEW` with dedicated reason codes (`COVERAGE_PARTIAL_EXTRACTION`, `NAMED_INSURED_PARTIAL_EXTRACTION`, etc.), preventing incomplete records from silently becoming `COMPLIANT`.
 
 ---
 

@@ -110,15 +110,84 @@ def _verify_coverage_semantic_support(cov_raw: RawCoverageSection, quote_text: O
 
 
 def _verify_endorsement_semantic_support(end_raw: RawEndorsement, quote_text: Optional[str]) -> bool:
+    """Verify that cited evidence text specifically supports the claimed endorsement type.
+    
+    Rejects generic insurance terms (e.g. standalone 'insured', 'additional') that frequently appear
+    in COI headers without indicating actual endorsement coverage.
+    """
     if not quote_text:
         return False
     c_quote = _clean_str(quote_text)
+
+    # 1. Recognized form number check
     if end_raw.form_number:
         c_form = _clean_str(end_raw.form_number)
-        if c_form and (c_form in c_quote or c_quote in c_form):
+        if c_form and len(c_form) >= 4 and (c_form in c_quote or c_quote in c_form):
             return True
-    if any(k in c_quote for k in ["additional insured", "additional", "insured", "endorsement", "waiver", "subrogation", "blanket", "primary"]):
+
+    end_type = (end_raw.endorsement_type or "").lower()
+
+    # 2. Additional Insured specific indicators
+    if "additional_insured" in end_type:
+        ai_indicators = [
+            "additional insured",
+            "additional insureds",
+            "scheduled person",
+            "automatic status",
+            "owners, lessees or contractors",
+            "owners lessees or contractors",
+            "who is an insured is amended",
+            "completed operations",
+            "cg 20 10",
+            "cg 20 37",
+            "cg 20 26",
+            "cg 20 38",
+            "cg2010",
+            "cg2037",
+        ]
+        if any(ind in c_quote for ind in ai_indicators):
+            return True
+
+    # 3. Waiver of Subrogation specific indicators
+    elif "waiver" in end_type or "subrogation" in end_type:
+        wos_indicators = [
+            "waiver of subrogation",
+            "waiver of our right",
+            "right of recovery",
+            "rights of recovery",
+            "subrogation is waived",
+            "subrogation waived",
+            "transfer of rights of recovery",
+            "cg 24 04",
+            "cg2404",
+            "wc 00 03",
+            "wc0003",
+        ]
+        if any(ind in c_quote for ind in wos_indicators):
+            return True
+
+    # 4. Primary and Non-Contributory specific indicators
+    elif "primary" in end_type or "noncontributory" in end_type:
+        pnc_indicators = [
+            "primary and noncontributory",
+            "primary and non-contributory",
+            "primary/non-contributory",
+            "primary & non-contributory",
+            "other insurance condition is amended",
+        ]
+        if any(ind in c_quote for ind in pnc_indicators):
+            return True
+
+    # 5. General recognized endorsement heading formulas
+    general_endorsement_headings = [
+        "this endorsement changes the policy",
+        "endorsement changes the policy",
+        "policy endorsement",
+        "commercial general liability endorsement",
+    ]
+    if any(h in c_quote for h in general_endorsement_headings):
         return True
+
     return False
 
 
@@ -191,23 +260,60 @@ class ExtractionPipelineService:
             cleaned_quote = quote.source_text.strip().lower()
 
             if cleaned_page_text and cleaned_quote not in cleaned_page_text:
-                found_in_spans = any(
-                    cleaned_quote in span.text.strip().lower() or span.text.strip().lower() in cleaned_quote
-                    for span in matching_page.spans
-                    if span.text.strip()
-                )
-                if not found_in_spans:
-                    words = [w for w in re.findall(r'\b\w+\b', cleaned_quote) if len(w) > 2]
-                    bigrams = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1)] if len(words) >= 2 else []
-                    found_bigram = any(bg in cleaned_page_text for bg in bigrams)
-                    if not found_bigram:
-                        return None
+                # Helper for normalized token extraction
+                def _normalize_tokens(s: str) -> List[str]:
+                    return [w for w in re.findall(r'\b[a-z0-9]+\b', s.lower()) if len(w) > 1]
 
-            # Try to locate matching text span on the page for exact coordinates
-            for span in matching_page.spans:
-                if span.text.strip().lower() in cleaned_quote or cleaned_quote in span.text.strip().lower():
-                    bounding_box = span.bounding_box
-                    break
+                quote_tokens = _normalize_tokens(cleaned_quote)
+                page_tokens = _normalize_tokens(cleaned_page_text)
+
+                if not quote_tokens:
+                    return None
+
+                norm_quote = " ".join(quote_tokens)
+                norm_page = " ".join(page_tokens)
+
+                # 1. Normalized continuous text match
+                is_matched = norm_quote in norm_page
+
+                # 2. Page span matching
+                if not is_matched:
+                    for span in matching_page.spans:
+                        span_text = span.text.strip().lower()
+                        if not span_text:
+                            continue
+                        span_tokens = _normalize_tokens(span_text)
+                        norm_span = " ".join(span_tokens)
+                        if norm_quote in norm_span or (len(quote_tokens) >= 3 and norm_span in norm_quote and len(span_tokens) >= 3):
+                            is_matched = True
+                            bounding_box = span.bounding_box
+                            break
+
+                # 3. Calibrated conservative sequence verification (eliminating single-bigram acceptance)
+                if not is_matched:
+                    # Short quotes (<= 3 tokens) must match as an exact continuous sequence in the document text
+                    if len(quote_tokens) <= 3:
+                        if norm_quote in norm_page:
+                            is_matched = True
+                    else:
+                        # Longer quotes (>= 4 tokens): require at least a 4-token contiguous sequence from the quote
+                        # to exist verbatim in the page text (eliminates acceptance of isolated 2-word bigrams).
+                        has_contiguous_4gram = any(
+                            " ".join(quote_tokens[i : i + 4]) in norm_page
+                            for i in range(len(quote_tokens) - 3)
+                        )
+                        if has_contiguous_4gram:
+                            is_matched = True
+
+                if not is_matched:
+                    return None
+
+            # Try to locate matching text span on the page for exact coordinates if not already found
+            if not bounding_box:
+                for span in matching_page.spans:
+                    if span.text.strip().lower() in cleaned_quote or cleaned_quote in span.text.strip().lower():
+                        bounding_box = span.bounding_box
+                        break
 
         return EvidenceReference(
             document_id=document_id,

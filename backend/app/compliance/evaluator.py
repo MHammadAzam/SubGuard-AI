@@ -198,6 +198,24 @@ def evaluate_coverage_limit(
     matching_coverages = [c for c in doc_set.coverages if c.coverage_type == req.coverage_type]
 
     if not matching_coverages:
+        if not doc_set.is_document_set_complete:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.UNABLE_TO_DETERMINE,
+                severity=req.severity,
+                reason_code="INCOMPLETE_DOCUMENT_SET_COVERAGE_UNKNOWN",
+                explanation=(
+                    f"Required {req.coverage_type.value} coverage was not found, "
+                    "but the submitted document set is flagged as incomplete. "
+                    "Coverage pages or declaration sheets may be missing."
+                ),
+                requires_human_review=True,
+                required_value={"min_amount_cents": req.min_amount_cents, "limit_field": req.limit_field.value},
+                found_value=None,
+                evidence=[],
+            )
+
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
@@ -222,6 +240,23 @@ def evaluate_coverage_limit(
                 evidences.append(cov.evidence)
 
     if not extracted_limits:
+        if not doc_set.is_document_set_complete:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.UNABLE_TO_DETERMINE,
+                severity=req.severity,
+                reason_code="INCOMPLETE_DOCUMENT_SET_COVERAGE_UNKNOWN",
+                explanation=(
+                    f"{req.coverage_type.value} section exists, but limit field '{req.limit_field.value}' "
+                    "was not found and the document set is flagged as incomplete."
+                ),
+                requires_human_review=True,
+                required_value={"min_amount_cents": req.min_amount_cents, "limit_field": req.limit_field.value},
+                found_value=None,
+                evidence=[cov.evidence for cov in matching_coverages if cov.evidence],
+            )
+
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
@@ -258,6 +293,24 @@ def evaluate_coverage_limit(
         )
 
     cov, limit_obj = extracted_limits[0]
+
+    # Check extraction status: PARTIAL
+    if cov.extraction_status == ExtractionStatus.PARTIAL:
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=req.severity,
+            reason_code="COVERAGE_PARTIAL_EXTRACTION",
+            explanation=(
+                f"Extracted {req.coverage_type.value} {req.limit_field.value} limit has PARTIAL extraction status. "
+                "Incomplete extraction records require human review."
+            ),
+            requires_human_review=True,
+            required_value={"min_amount_cents": req.min_amount_cents},
+            found_value={"amount_cents": limit_obj.amount_cents, "raw_text": limit_obj.raw_text},
+            evidence=evidences,
+        )
 
     # Check extraction confidence / status
     if cov.extraction_status == ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT:
@@ -360,6 +413,20 @@ def evaluate_policy_expiration(
     matching_coverages = [c for c in doc_set.coverages if c.coverage_type == req.coverage_type]
 
     if not matching_coverages:
+        if not doc_set.is_document_set_complete:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.UNABLE_TO_DETERMINE,
+                severity=req.severity,
+                reason_code="INCOMPLETE_DOCUMENT_SET_COVERAGE_UNKNOWN",
+                explanation=f"Cannot verify expiration: no {req.coverage_type.value} coverage found and document set is incomplete.",
+                requires_human_review=True,
+                required_value={"evaluation_date": evaluation_date.isoformat()},
+                found_value=None,
+                evidence=[],
+            )
+
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
@@ -375,6 +442,20 @@ def evaluate_policy_expiration(
 
     cov = matching_coverages[0]
     if not cov.expiration_date:
+        if not doc_set.is_document_set_complete:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.UNABLE_TO_DETERMINE,
+                severity=req.severity,
+                reason_code="INCOMPLETE_DOCUMENT_SET_COVERAGE_UNKNOWN",
+                explanation=f"No policy expiration date extracted for {req.coverage_type.value} and document set is incomplete.",
+                requires_human_review=True,
+                required_value={"evaluation_date": evaluation_date.isoformat()},
+                found_value=None,
+                evidence=[cov.evidence] if cov.evidence else [],
+            )
+
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
@@ -390,6 +471,24 @@ def evaluate_policy_expiration(
 
     exp_date_obj = cov.expiration_date
     evidence_list = [cov.evidence] if cov.evidence else []
+
+    # Check extraction status: PARTIAL
+    if cov.extraction_status == ExtractionStatus.PARTIAL:
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=req.severity,
+            reason_code="POLICY_EXPIRATION_PARTIAL_EXTRACTION",
+            explanation=(
+                f"Policy expiration date for {req.coverage_type.value} has PARTIAL extraction status. "
+                "Human review required."
+            ),
+            requires_human_review=True,
+            required_value={"evaluation_date": evaluation_date.isoformat()},
+            found_value={"date": exp_date_obj.date.isoformat(), "raw_text": exp_date_obj.raw_text},
+            evidence=evidence_list,
+        )
 
     # Check extraction confidence / status
     if cov.extraction_status == ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT:
@@ -508,6 +607,20 @@ def evaluate_policy_effective_date(
     matching_coverages = [c for c in doc_set.coverages if c.coverage_type == req.coverage_type]
 
     if not matching_coverages:
+        if not doc_set.is_document_set_complete:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.UNABLE_TO_DETERMINE,
+                severity=req.severity,
+                reason_code="INCOMPLETE_DOCUMENT_SET_COVERAGE_UNKNOWN",
+                explanation=f"Cannot verify effective date: no {req.coverage_type.value} coverage found and document set is incomplete.",
+                requires_human_review=True,
+                required_value={"evaluation_date": evaluation_date.isoformat()},
+                found_value=None,
+                evidence=[],
+            )
+
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
@@ -523,6 +636,20 @@ def evaluate_policy_effective_date(
 
     cov = matching_coverages[0]
     if not cov.effective_date:
+        if not doc_set.is_document_set_complete:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.UNABLE_TO_DETERMINE,
+                severity=req.severity,
+                reason_code="INCOMPLETE_DOCUMENT_SET_COVERAGE_UNKNOWN",
+                explanation=f"No policy effective date extracted for {req.coverage_type.value} and document set is incomplete.",
+                requires_human_review=True,
+                required_value={"evaluation_date": evaluation_date.isoformat()},
+                found_value=None,
+                evidence=[cov.evidence] if cov.evidence else [],
+            )
+
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
@@ -538,6 +665,24 @@ def evaluate_policy_effective_date(
 
     eff_date_obj = cov.effective_date
     evidence_list = [cov.evidence] if cov.evidence else []
+
+    # Check extraction status: PARTIAL
+    if cov.extraction_status == ExtractionStatus.PARTIAL:
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=req.severity,
+            reason_code="POLICY_EFFECTIVE_DATE_PARTIAL_EXTRACTION",
+            explanation=(
+                f"Policy effective date for {req.coverage_type.value} has PARTIAL extraction status. "
+                "Human review required."
+            ),
+            requires_human_review=True,
+            required_value={"evaluation_date": evaluation_date.isoformat()},
+            found_value={"date": eff_date_obj.date.isoformat(), "raw_text": eff_date_obj.raw_text},
+            evidence=evidence_list,
+        )
 
     # Check extraction confidence / status
     if cov.extraction_status == ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT:
@@ -653,6 +798,20 @@ def evaluate_named_insured(
     """Evaluate whether the named insured on the certificate matches the required entity name."""
     if not doc_set.named_insured or not doc_set.named_insured.name or not doc_set.named_insured.name.strip():
         evidence_list = [doc_set.named_insured.evidence] if (doc_set.named_insured and doc_set.named_insured.evidence) else []
+        if not doc_set.is_document_set_complete:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.UNABLE_TO_DETERMINE,
+                severity=req.severity,
+                reason_code="INCOMPLETE_DOCUMENT_SET_NAMED_INSURED_UNKNOWN",
+                explanation="No named insured entity name found and the document set is flagged as incomplete.",
+                requires_human_review=True,
+                required_value={"required_entity_name": req.required_entity_name},
+                found_value=None,
+                evidence=evidence_list,
+            )
+
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
@@ -668,6 +827,24 @@ def evaluate_named_insured(
 
     ni = doc_set.named_insured
     evidence_list = [ni.evidence] if ni.evidence else []
+
+    # Check extraction status: PARTIAL
+    if ni.extraction_status == ExtractionStatus.PARTIAL:
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=req.severity,
+            reason_code="NAMED_INSURED_PARTIAL_EXTRACTION",
+            explanation=(
+                f"Named insured '{ni.name or ''}' has PARTIAL extraction status. "
+                "Entity information may be truncated. Human review required."
+            ),
+            requires_human_review=True,
+            required_value={"required_entity_name": req.required_entity_name},
+            found_value={"extracted_name": ni.name},
+            evidence=evidence_list,
+        )
 
     if ni.extraction_status == ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT:
         return ComplianceFinding(
@@ -860,10 +1037,9 @@ def evaluate_endorsement_presence(
     if not valid_endorsements:
         valid_endorsements = matching_endorsements
 
-    primary_end = valid_endorsements[0]
     evidence_list = [e.evidence for e in valid_endorsements if e.evidence]
 
-    # If endorsement is present but mandatory evidence is missing
+    # Mandatory evidence check across all valid endorsements
     if req.mandatory_evidence and not evidence_list:
         return ComplianceFinding(
             requirement_id=req.requirement_id,
@@ -877,12 +1053,16 @@ def evaluate_endorsement_presence(
             ),
             requires_human_review=True,
             required_value={"mandatory_evidence": True},
-            found_value={"form_number": primary_end.form_number},
+            found_value={"form_numbers": [e.form_number for e in valid_endorsements if e.form_number]},
             evidence=[],
         )
 
-    # Check if endorsement evidence text is on page but semantic support is unverified
-    if primary_end.extraction_status == ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT:
+    # 1. Multi-endorsement check: Unverified semantic support in ANY matching endorsement
+    unverified_ends = [
+        e for e in valid_endorsements if e.extraction_status == ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT
+    ]
+    if unverified_ends:
+        primary = unverified_ends[0]
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
@@ -890,19 +1070,47 @@ def evaluate_endorsement_presence(
             severity=req.severity,
             reason_code="ENDORSEMENT_EVIDENCE_SUPPORT_UNVERIFIED",
             explanation=(
-                f"{req.required_endorsement_type.value} endorsement form has cited text on the page, "
+                f"{req.required_endorsement_type.value} endorsement form "
+                f"({primary.form_number or 'unspecified'}) has cited text on the page, "
                 "but specific semantic support for this endorsement is unverified. Human review required."
             ),
             requires_human_review=True,
             required_value={"required_endorsement": req.required_endorsement_type.value},
-            found_value={"form_number": primary_end.form_number},
+            found_value={"form_numbers": [e.form_number for e in valid_endorsements if e.form_number]},
             evidence=evidence_list,
         )
 
-    # Check extraction confidence / status
-    if primary_end.extraction_status == ExtractionStatus.UNCERTAIN or (
-        primary_end.confidence is not None and primary_end.confidence < CONFIDENCE_THRESHOLD
-    ):
+    # 2. Multi-endorsement check: PARTIAL extraction status in ANY matching endorsement
+    partial_ends = [
+        e for e in valid_endorsements if e.extraction_status == ExtractionStatus.PARTIAL
+    ]
+    if partial_ends:
+        primary = partial_ends[0]
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=req.severity,
+            reason_code="ENDORSEMENT_PARTIAL_EXTRACTION",
+            explanation=(
+                f"Extracted {req.required_endorsement_type.value} endorsement form "
+                f"({primary.form_number or 'unspecified'}) has PARTIAL extraction status. "
+                "Incomplete endorsement details require human review."
+            ),
+            requires_human_review=True,
+            required_value={"required_endorsement": req.required_endorsement_type.value},
+            found_value={"form_numbers": [e.form_number for e in valid_endorsements if e.form_number]},
+            evidence=evidence_list,
+        )
+
+    # 3. Multi-endorsement check: UNCERTAIN extraction status or low confidence in ANY matching endorsement
+    uncertain_ends = [
+        e for e in valid_endorsements
+        if e.extraction_status == ExtractionStatus.UNCERTAIN
+        or (e.confidence is not None and e.confidence < CONFIDENCE_THRESHOLD)
+    ]
+    if uncertain_ends:
+        primary = uncertain_ends[0]
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
@@ -911,17 +1119,19 @@ def evaluate_endorsement_presence(
             reason_code="ENDORSEMENT_CONFIDENCE_LOW",
             explanation=(
                 f"Extracted {req.required_endorsement_type.value} endorsement form "
-                f"({primary_end.form_number or 'unspecified'}) has low extraction confidence "
-                f"({primary_end.confidence or 'uncertain'}). Human verification required."
+                f"({primary.form_number or 'unspecified'}) has low extraction confidence "
+                f"({primary.confidence or 'uncertain'}). Human verification required."
             ),
             requires_human_review=True,
             required_value={"required_endorsement": req.required_endorsement_type.value},
-            found_value={"form_number": primary_end.form_number},
+            found_value={"form_numbers": [e.form_number for e in valid_endorsements if e.form_number]},
             evidence=evidence_list,
         )
 
-    # Check for blanket endorsement wording
-    if primary_end.is_blanket:
+    # 4. Multi-endorsement check: Blanket wording in ANY matching endorsement requires contract check
+    blanket_ends = [e for e in valid_endorsements if e.is_blanket]
+    if blanket_ends:
+        primary = blanket_ends[0]
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
@@ -930,16 +1140,45 @@ def evaluate_endorsement_presence(
             reason_code="BLANKET_ENDORSEMENT_REQUIRES_CONTRACT_CHECK",
             explanation=(
                 f"{req.required_endorsement_type.value} endorsement form "
-                f"({primary_end.form_number or 'blanket'}) provides automatic coverage 'where required by written contract'. "
+                f"({primary.form_number or 'blanket'}) provides automatic coverage 'where required by written contract'. "
                 "Human review is required to verify an executed written contract exists."
             ),
             requires_human_review=True,
             required_value={"required_endorsement": req.required_endorsement_type.value},
-            found_value={"form_number": primary_end.form_number, "is_blanket": True},
+            found_value={
+                "form_numbers": [e.form_number for e in valid_endorsements if e.form_number],
+                "is_blanket": True,
+            },
             evidence=evidence_list,
         )
 
-    # Endorsement verified with evidence
+    # 5. Multi-endorsement check: Contradictory policies across multiple endorsements
+    distinct_policies = {e.applicable_policy for e in valid_endorsements if e.applicable_policy}
+    if len(distinct_policies) > 1:
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=Severity.MAJOR,
+            reason_code="CONTRADICTORY_ENDORSEMENTS_FOUND",
+            explanation=(
+                f"Multiple conflicting endorsements found for {req.required_endorsement_type.value} "
+                f"linked to different policies: {list(distinct_policies)}. Human review required."
+            ),
+            requires_human_review=True,
+            required_value={"required_endorsement": req.required_endorsement_type.value},
+            found_value={"conflicting_policies": list(distinct_policies)},
+            evidence=evidence_list,
+        )
+
+    # 6. All endorsements verified with valid supporting evidence
+    all_form_numbers = [e.form_number for e in valid_endorsements if e.form_number]
+    all_named_entities = []
+    for e in valid_endorsements:
+        all_named_entities.extend(e.named_entities)
+
+    primary_form = all_form_numbers[0] if all_form_numbers else "Standard"
+
     return ComplianceFinding(
         requirement_id=req.requirement_id,
         rule_type=req.rule_type,
@@ -948,13 +1187,14 @@ def evaluate_endorsement_presence(
         reason_code="ENDORSEMENT_VERIFIED",
         explanation=(
             f"{req.required_endorsement_type.value} endorsement form "
-            f"({primary_end.form_number or 'Standard'}) verified with document evidence."
+            f"({primary_form}) verified with document evidence."
         ),
         requires_human_review=False,
         required_value={"required_endorsement": req.required_endorsement_type.value},
         found_value={
-            "form_number": primary_end.form_number,
-            "named_entities": primary_end.named_entities,
+            "form_number": primary_form,
+            "all_form_numbers": all_form_numbers,
+            "named_entities": list(set(all_named_entities)),
         },
         evidence=evidence_list,
     )

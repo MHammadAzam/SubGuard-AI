@@ -1,0 +1,702 @@
+{
+  "dataset_id": "subguard-synthetic-v1",
+  "name": "SubGuard AI Standard Synthetic Benchmark",
+  "version": "1.0.0",
+  "description": "Comprehensive synthetic suite evaluating entities, limits, dates, endorsements, and evidence grounding.",
+  "documents": [
+    {
+      "document_id": "SYNTH-001",
+      "filename": "synthetic_standard_acord25.pdf",
+      "source_type": "synthetic",
+      "document_type": "coi",
+      "page_count": 1,
+      "description": "Standard single-page ACORD 25 with GL, Auto, and Workers Comp",
+      "requires_ocr": false,
+      "named_insured": {
+        "name": "Apex Electrical Contractors LLC",
+        "address": "123 Industrial Pkwy, Austin, TX 78701",
+        "is_absent": false,
+        "evidence": {
+          "page_number": 1,
+          "source_text": "INSURED: Apex Electrical Contractors LLC",
+          "bounding_box": null
+        }
+      },
+      "certificate_holder": {
+        "name": "General Contractor Corp",
+        "address": "500 Builder Way, Dallas, TX 75201",
+        "is_absent": false,
+        "evidence": {
+          "page_number": 1,
+          "source_text": "CERTIFICATE HOLDER: General Contractor Corp",
+          "bounding_box": null
+        }
+      },
+      "coverages": [
+        {
+          "coverage_type": "general_liability",
+          "policy_number": "GL-98765432",
+          "insurer_name": "Travelers Indemnity Co",
+          "each_occurrence": {
+            "amount_cents": 100000000,
+            "currency": "USD",
+            "raw_text": "$1,000,000",
+            "is_absent": false
+          },
+          "general_aggregate": {
+            "amount_cents": 200000000,
+            "currency": "USD",
+            "raw_text": "$2,000,000",
+            "is_absent": false
+          },
+          "products_completed_ops": {
+            "amount_cents": 200000000,
+            "currency": "USD",
+            "raw_text": "$2,000,000",
+            "is_absent": false
+          },
+          "personal_adv_injury": null,
+          "combined_single_limit": null,
+          "per_accident": null,
+          "disease_each_employee": null,
+          "disease_policy_limit": null,
+          "effective_date": {
+            "date": "2025-01-01",
+            "raw_text": "01/01/2025",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "expiration_date": {
+            "date": "2026-01-01",
+            "raw_text": "01/01/2026",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "is_absent": false,
+          "evidence": {
+            "page_number": 1,
+            "source_text": "POLICY NUMBER: GL-98765432",
+            "bounding_box": null
+          }
+        },
+        {
+          "coverage_type": "auto_liability",
+          "policy_number": "AL-12345678",
+          "insurer_name": null,
+          "each_occurrence": null,
+          "general_aggregate": null,
+          "products_completed_ops": null,
+          "personal_adv_injury": null,
+          "combined_single_limit": {
+            "amount_cents": 100000000,
+            "currency": "USD",
+            "raw_text": "$1,000,000",
+            "is_absent": false
+          },
+          "per_accident": null,
+          "disease_each_employee": null,
+          "disease_policy_limit": null,
+          "effective_date": {
+            "date": "2025-01-01",
+            "raw_text": "01/01/2025",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "expiration_date": {
+            "date": "2026-01-01",
+            "raw_text": "01/01/2026",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "is_absent": false,
+          "evidence": {
+            "page_number": 1,
+            "source_text": "POLICY NUMBER: AL-12345678",
+            "bounding_box": null
+          }
+        },
+        {
+          "coverage_type": "workers_comp",
+          "policy_number": "WC-55554444",
+          "insurer_name": "Texas Mutual Insurance",
+          "each_occurrence": null,
+          "general_aggregate": null,
+          "products_completed_ops": null,
+          "personal_adv_injury": null,
+          "combined_single_limit": null,
+          "per_accident": {
+            "amount_cents": 100000000,
+            "currency": "USD",
+            "raw_text": "$1,000,000",
+            "is_absent": false
+          },
+          "disease_each_employee": {
+            "amount_cents": 100000000,
+            "currency": "USD",
+            "raw_text": "$1,000,000",
+            "is_absent": false
+          },
+          "disease_policy_limit": {
+            "amount_cents": 100000000,
+            "currency": "USD",
+            "raw_text": "$1,000,000",
+            "is_absent": false
+          },
+          "effective_date": {
+            "date": "2025-01-01",
+            "raw_text": "01/01/2025",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "expiration_date": {
+            "date": "2026-01-01",
+            "raw_text": "01/01/2026",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "is_absent": false,
+          "evidence": {
+            "page_number": 1,
+            "source_text": "POLICY NUMBER: WC-55554444",
+            "bounding_box": null
+          }
+        }
+      ],
+      "endorsements": [
+        {
+          "endorsement_type": "additional_insured",
+          "form_number": null,
+          "is_blanket": false,
+          "is_coi_checkbox_only": false,
+          "named_entities": [
+            "General Contractor Corp"
+          ],
+          "is_absent": false,
+          "evidence": {
+            "page_number": 1,
+            "source_text": "General Contractor Corp is included as Additional Insured on General Liability.",
+            "bounding_box": null
+          }
+        }
+      ],
+      "absent_coverages": [
+        "umbrella_excess",
+        "professional_liability"
+      ],
+      "absent_endorsements": [
+        "waiver_of_subrogation",
+        "primary_noncontributory"
+      ]
+    },
+    {
+      "document_id": "SYNTH-002",
+      "filename": "synthetic_multipage_coi_endorsement.pdf",
+      "source_type": "synthetic",
+      "document_type": "coi",
+      "page_count": 2,
+      "description": "2-page document with COI on page 1 and CG 20 10 on page 2",
+      "requires_ocr": false,
+      "named_insured": {
+        "name": "Apex Electrical Contractors LLC",
+        "address": null,
+        "is_absent": false,
+        "evidence": {
+          "page_number": 1,
+          "source_text": "INSURED: Apex Electrical Contractors LLC",
+          "bounding_box": null
+        }
+      },
+      "certificate_holder": {
+        "name": "General Contractor Corp",
+        "address": null,
+        "is_absent": false,
+        "evidence": {
+          "page_number": 1,
+          "source_text": "CERTIFICATE HOLDER: General Contractor Corp",
+          "bounding_box": null
+        }
+      },
+      "coverages": [
+        {
+          "coverage_type": "general_liability",
+          "policy_number": "GL-98765432",
+          "insurer_name": null,
+          "each_occurrence": {
+            "amount_cents": 100000000,
+            "currency": "USD",
+            "raw_text": "$1,000,000",
+            "is_absent": false
+          },
+          "general_aggregate": {
+            "amount_cents": 200000000,
+            "currency": "USD",
+            "raw_text": "$2,000,000",
+            "is_absent": false
+          },
+          "products_completed_ops": null,
+          "personal_adv_injury": null,
+          "combined_single_limit": null,
+          "per_accident": null,
+          "disease_each_employee": null,
+          "disease_policy_limit": null,
+          "effective_date": {
+            "date": "2025-01-01",
+            "raw_text": "01/01/2025",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "expiration_date": {
+            "date": "2026-01-01",
+            "raw_text": "01/01/2026",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "is_absent": false,
+          "evidence": {
+            "page_number": 1,
+            "source_text": "COMMERCIAL GENERAL LIABILITY - POLICY NUMBER: GL-98765432",
+            "bounding_box": null
+          }
+        }
+      ],
+      "endorsements": [
+        {
+          "endorsement_type": "additional_insured",
+          "form_number": "CG 20 10 04 13",
+          "is_blanket": false,
+          "is_coi_checkbox_only": false,
+          "named_entities": [
+            "General Contractor Corp"
+          ],
+          "is_absent": false,
+          "evidence": {
+            "page_number": 2,
+            "source_text": "COMMERCIAL GENERAL LIABILITY CG 20 10 04 13",
+            "bounding_box": null
+          }
+        }
+      ],
+      "absent_coverages": [
+        "workers_comp",
+        "umbrella_excess"
+      ],
+      "absent_endorsements": [
+        "waiver_of_subrogation"
+      ]
+    },
+    {
+      "document_id": "SYNTH-003",
+      "filename": "synthetic_missing_sections.pdf",
+      "source_type": "synthetic",
+      "document_type": "coi",
+      "page_count": 1,
+      "description": "COI with missing named insured and missing Workers Comp",
+      "requires_ocr": false,
+      "named_insured": {
+        "name": null,
+        "address": null,
+        "is_absent": true,
+        "evidence": null
+      },
+      "certificate_holder": {
+        "name": "General Contractor Corp",
+        "address": null,
+        "is_absent": false,
+        "evidence": {
+          "page_number": 1,
+          "source_text": "CERTIFICATE HOLDER: General Contractor Corp",
+          "bounding_box": null
+        }
+      },
+      "coverages": [
+        {
+          "coverage_type": "general_liability",
+          "policy_number": "GL-11223344",
+          "insurer_name": null,
+          "each_occurrence": {
+            "amount_cents": 100000000,
+            "currency": "USD",
+            "raw_text": "$1,000,000",
+            "is_absent": false
+          },
+          "general_aggregate": {
+            "amount_cents": 200000000,
+            "currency": "USD",
+            "raw_text": "$2,000,000",
+            "is_absent": false
+          },
+          "products_completed_ops": null,
+          "personal_adv_injury": null,
+          "combined_single_limit": null,
+          "per_accident": null,
+          "disease_each_employee": null,
+          "disease_policy_limit": null,
+          "effective_date": {
+            "date": "2025-01-01",
+            "raw_text": "01/01/2025",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "expiration_date": {
+            "date": "2026-01-01",
+            "raw_text": "01/01/2026",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "is_absent": false,
+          "evidence": {
+            "page_number": 1,
+            "source_text": "POLICY NUMBER: GL-11223344",
+            "bounding_box": null
+          }
+        }
+      ],
+      "endorsements": [],
+      "absent_coverages": [
+        "workers_comp",
+        "auto_liability"
+      ],
+      "absent_endorsements": [
+        "additional_insured",
+        "waiver_of_subrogation"
+      ]
+    },
+    {
+      "document_id": "SYNTH-004",
+      "filename": "synthetic_split_limits_and_umbrella.pdf",
+      "source_type": "synthetic",
+      "document_type": "coi",
+      "page_count": 1,
+      "description": "COI with Umbrella excess liability of $5,000,000",
+      "requires_ocr": false,
+      "named_insured": {
+        "name": "Apex Electrical Contractors LLC",
+        "address": null,
+        "is_absent": false,
+        "evidence": {
+          "page_number": 1,
+          "source_text": "INSURED: Apex Electrical Contractors LLC",
+          "bounding_box": null
+        }
+      },
+      "certificate_holder": {
+        "name": "General Contractor Corp",
+        "address": null,
+        "is_absent": false,
+        "evidence": {
+          "page_number": 1,
+          "source_text": "CERTIFICATE HOLDER: General Contractor Corp",
+          "bounding_box": null
+        }
+      },
+      "coverages": [
+        {
+          "coverage_type": "general_liability",
+          "policy_number": "GL-98765432",
+          "insurer_name": null,
+          "each_occurrence": {
+            "amount_cents": 100000000,
+            "currency": "USD",
+            "raw_text": "$1,000,000",
+            "is_absent": false
+          },
+          "general_aggregate": {
+            "amount_cents": 200000000,
+            "currency": "USD",
+            "raw_text": "$2,000,000",
+            "is_absent": false
+          },
+          "products_completed_ops": null,
+          "personal_adv_injury": null,
+          "combined_single_limit": null,
+          "per_accident": null,
+          "disease_each_employee": null,
+          "disease_policy_limit": null,
+          "effective_date": {
+            "date": "2025-01-01",
+            "raw_text": "01/01/2025",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "expiration_date": {
+            "date": "2026-01-01",
+            "raw_text": "01/01/2026",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "is_absent": false,
+          "evidence": null
+        },
+        {
+          "coverage_type": "umbrella_excess",
+          "policy_number": "UMB-55667788",
+          "insurer_name": null,
+          "each_occurrence": {
+            "amount_cents": 500000000,
+            "currency": "USD",
+            "raw_text": "$5,000,000",
+            "is_absent": false
+          },
+          "general_aggregate": {
+            "amount_cents": 500000000,
+            "currency": "USD",
+            "raw_text": "$5,000,000",
+            "is_absent": false
+          },
+          "products_completed_ops": null,
+          "personal_adv_injury": null,
+          "combined_single_limit": null,
+          "per_accident": null,
+          "disease_each_employee": null,
+          "disease_policy_limit": null,
+          "effective_date": {
+            "date": "2025-01-01",
+            "raw_text": "01/01/2025",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "expiration_date": {
+            "date": "2026-01-01",
+            "raw_text": "01/01/2026",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "is_absent": false,
+          "evidence": {
+            "page_number": 1,
+            "source_text": "POLICY NUMBER: UMB-55667788",
+            "bounding_box": null
+          }
+        }
+      ],
+      "endorsements": [],
+      "absent_coverages": [
+        "workers_comp"
+      ],
+      "absent_endorsements": []
+    },
+    {
+      "document_id": "SYNTH-005",
+      "filename": "synthetic_expired_and_inverted_dates.pdf",
+      "source_type": "synthetic",
+      "document_type": "coi",
+      "page_count": 1,
+      "description": "COI with expired General Liability dates and inverted Auto dates",
+      "requires_ocr": false,
+      "named_insured": {
+        "name": "Apex Electrical Contractors LLC",
+        "address": null,
+        "is_absent": false,
+        "evidence": {
+          "page_number": 1,
+          "source_text": "INSURED: Apex Electrical Contractors LLC",
+          "bounding_box": null
+        }
+      },
+      "certificate_holder": {
+        "name": "General Contractor Corp",
+        "address": null,
+        "is_absent": false,
+        "evidence": {
+          "page_number": 1,
+          "source_text": "CERTIFICATE HOLDER: General Contractor Corp",
+          "bounding_box": null
+        }
+      },
+      "coverages": [
+        {
+          "coverage_type": "general_liability",
+          "policy_number": "GL-98765432",
+          "insurer_name": null,
+          "each_occurrence": {
+            "amount_cents": 100000000,
+            "currency": "USD",
+            "raw_text": "$1,000,000",
+            "is_absent": false
+          },
+          "general_aggregate": null,
+          "products_completed_ops": null,
+          "personal_adv_injury": null,
+          "combined_single_limit": null,
+          "per_accident": null,
+          "disease_each_employee": null,
+          "disease_policy_limit": null,
+          "effective_date": {
+            "date": "2023-01-01",
+            "raw_text": "01/01/2023",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "expiration_date": {
+            "date": "2024-01-01",
+            "raw_text": "01/01/2024",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "is_absent": false,
+          "evidence": null
+        },
+        {
+          "coverage_type": "auto_liability",
+          "policy_number": "AL-99887766",
+          "insurer_name": null,
+          "each_occurrence": null,
+          "general_aggregate": null,
+          "products_completed_ops": null,
+          "personal_adv_injury": null,
+          "combined_single_limit": {
+            "amount_cents": 100000000,
+            "currency": "USD",
+            "raw_text": "$1,000,000",
+            "is_absent": false
+          },
+          "per_accident": null,
+          "disease_each_employee": null,
+          "disease_policy_limit": null,
+          "effective_date": {
+            "date": "2026-01-01",
+            "raw_text": "01/01/2026",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "expiration_date": {
+            "date": "2025-01-01",
+            "raw_text": "01/01/2025",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "is_absent": false,
+          "evidence": null
+        }
+      ],
+      "endorsements": [],
+      "absent_coverages": [
+        "workers_comp",
+        "umbrella_excess"
+      ],
+      "absent_endorsements": []
+    },
+    {
+      "document_id": "SYNTH-006",
+      "filename": "synthetic_scanned_ocr.pdf",
+      "source_type": "synthetic",
+      "document_type": "unknown",
+      "page_count": 1,
+      "description": "Scanned image-only PDF requiring OCR processing",
+      "requires_ocr": true,
+      "named_insured": null,
+      "certificate_holder": null,
+      "coverages": [],
+      "endorsements": [],
+      "absent_coverages": [],
+      "absent_endorsements": []
+    },
+    {
+      "document_id": "SYNTH-007",
+      "filename": "synthetic_corporate_suffix_variation.pdf",
+      "source_type": "synthetic",
+      "document_type": "coi",
+      "page_count": 1,
+      "description": "COI naming 'Apex Electrical Inc' rather than 'Apex Electrical Contractors LLC'",
+      "requires_ocr": false,
+      "named_insured": {
+        "name": "Apex Electrical Inc",
+        "address": null,
+        "is_absent": false,
+        "evidence": {
+          "page_number": 1,
+          "source_text": "INSURED: Apex Electrical Inc",
+          "bounding_box": null
+        }
+      },
+      "certificate_holder": {
+        "name": "General Contractor Corp",
+        "address": null,
+        "is_absent": false,
+        "evidence": {
+          "page_number": 1,
+          "source_text": "CERTIFICATE HOLDER: General Contractor Corp",
+          "bounding_box": null
+        }
+      },
+      "coverages": [
+        {
+          "coverage_type": "general_liability",
+          "policy_number": "GL-98765432",
+          "insurer_name": null,
+          "each_occurrence": {
+            "amount_cents": 100000000,
+            "currency": "USD",
+            "raw_text": "$1,000,000",
+            "is_absent": false
+          },
+          "general_aggregate": {
+            "amount_cents": 200000000,
+            "currency": "USD",
+            "raw_text": "$2,000,000",
+            "is_absent": false
+          },
+          "products_completed_ops": null,
+          "personal_adv_injury": null,
+          "combined_single_limit": null,
+          "per_accident": null,
+          "disease_each_employee": null,
+          "disease_policy_limit": null,
+          "effective_date": {
+            "date": "2025-01-01",
+            "raw_text": "01/01/2025",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "expiration_date": {
+            "date": "2026-01-01",
+            "raw_text": "01/01/2026",
+            "is_absent": false,
+            "is_ambiguous": false
+          },
+          "is_absent": false,
+          "evidence": null
+        }
+      ],
+      "endorsements": [],
+      "absent_coverages": [
+        "workers_comp"
+      ],
+      "absent_endorsements": []
+    },
+    {
+      "document_id": "SYNTH-008",
+      "filename": "synthetic_blanket_endorsement.pdf",
+      "source_type": "synthetic",
+      "document_type": "endorsement",
+      "page_count": 1,
+      "description": "Endorsement document with blanket automatic additional insured wording",
+      "requires_ocr": false,
+      "named_insured": null,
+      "certificate_holder": null,
+      "coverages": [],
+      "endorsements": [
+        {
+          "endorsement_type": "additional_insured",
+          "form_number": null,
+          "is_blanket": true,
+          "is_coi_checkbox_only": false,
+          "named_entities": [],
+          "is_absent": false,
+          "evidence": {
+            "page_number": 1,
+            "source_text": "organization whom you have agreed by written contract to add as additional insured",
+            "bounding_box": null
+          }
+        }
+      ],
+      "absent_coverages": [
+        "general_liability",
+        "workers_comp"
+      ],
+      "absent_endorsements": [
+        "waiver_of_subrogation"
+      ]
+    }
+  ]
+}

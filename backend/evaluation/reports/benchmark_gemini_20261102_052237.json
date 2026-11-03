@@ -1,0 +1,98 @@
+{
+  "benchmark_id": "aa2fac29-4840-4b3a-971c-78949a0213de",
+  "timestamp": "2026-11-02T05:22:37.286199+00:00",
+  "benchmark_type": "live_model_evaluation",
+  "dataset_source_type": "synthetic",
+  "provider_name": "gemini",
+  "model_name": "gemini-2.0-flash",
+  "dataset_id": "subguard-synthetic-v1",
+  "dataset_version": "1.0.0",
+  "total_documents": 1,
+  "evaluated_documents_count": 0,
+  "configuration_errors_count": 0,
+  "provider_errors_count": 1,
+  "not_run_count": 0,
+  "processing_success_count": 0,
+  "processing_success_rate": 0.0,
+  "strict_passed_documents_count": 0,
+  "strict_document_pass_rate": 0.0,
+  "thresholded_passed_documents_count": 0,
+  "thresholded_document_pass_rate": 0.0,
+  "threshold_criterion": "field_acc >= 0.80 and evidence_rate >= 0.80",
+  "overall_normalized_accuracy": 0.0,
+  "overall_exact_accuracy": 0.0,
+  "overall_evidence_grounding_score": 1.0,
+  "field_metrics": {
+    "all": {
+      "category": "all",
+      "total_evaluated": 0,
+      "exact_matches": 0,
+      "normalized_matches": 0,
+      "true_positives": 0,
+      "false_positives": 0,
+      "true_negatives": 0,
+      "false_negatives": 0,
+      "uncertain_extractions": 0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1_score": 0.0,
+      "exact_match_accuracy": 0.0,
+      "normalized_accuracy": 0.0
+    }
+  },
+  "evidence_metrics": {
+    "total_citations": 0,
+    "page_correct_count": 0,
+    "page_accuracy": 1.0,
+    "found_on_page_count": 0,
+    "unsupported_quote_count": 0,
+    "unsupported_rate": 0.0,
+    "hallucinated_quote_count": 0,
+    "hallucination_rate": 0.0,
+    "cross_page_count": 0,
+    "cross_page_rate": 0.0,
+    "value_supported_count": 0,
+    "value_supported_rate": 1.0,
+    "category_aligned_count": 0,
+    "category_aligned_rate": 1.0,
+    "digital_citations_count": 0,
+    "ocr_citations_count": 0
+  },
+  "document_results": [
+    {
+      "document_id": "SYNTH-001",
+      "filename": "synthetic_standard_acord25.pdf",
+      "source_type": "synthetic",
+      "document_type": "coi",
+      "processing_status": "provider_error",
+      "requires_ocr_matched": true,
+      "field_results": [
+        {
+          "field_name": "document_execution",
+          "category": "execution",
+          "ground_truth_present": false,
+          "extracted_present": false,
+          "exact_match": false,
+          "normalized_match": false,
+          "expected_value": null,
+          "extracted_value": null,
+          "error_type": "provider_error",
+          "notes": "Extraction halted due to provider_error"
+        }
+      ],
+      "evidence_results": [],
+      "field_accuracy": 0.0,
+      "exact_field_accuracy": 0.0,
+      "evidence_grounding_rate": 0.0,
+      "is_strictly_passed": false
+    }
+  ],
+  "execution_time_seconds": 3.622,
+  "sanitized_environment": {
+    "GEMINI_API_KEY": "[REDACTED]",
+    "NUMBER_OF_PROCESSORS": "12",
+    "OS": "Windows_NT",
+    "PROCESSOR_ARCHITECTURE": "AMD64",
+    "PYTHON_VERSION": "3.12.0"
+  }
+}

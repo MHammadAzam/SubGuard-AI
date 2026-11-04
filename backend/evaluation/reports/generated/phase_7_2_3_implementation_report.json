@@ -1,0 +1,75 @@
+{
+  "phase": "7.2.3",
+  "title": "Controlled Compliance Safeguard Implementation, Regression Testing & Frozen-Cohort Verification",
+  "status": "COMPLETED",
+  "date": "2026-11-04",
+  "verification_verdict": "PHASE 7.2.3 COMPLETE — ALL ACCEPTANCE CRITERIA MET",
+  "baseline_commit": "2bb3744aad6bca8778f4867bd85107a54a68bfd2",
+  "tests": {
+    "baseline_count": 205,
+    "new_tests_count": 10,
+    "total_passing_tests": 215,
+    "failures": 0,
+    "errors": 0,
+    "runtime_seconds": 6.392
+  },
+  "work_packages": {
+    "work_package_a": {
+      "name": "Defensive Active-Term Enforcement & Future Effective Date Protection",
+      "target_scenario": "SCEN-16",
+      "status": "COMPLETED",
+      "components_modified": [
+        "backend/app/schemas/insurance.py",
+        "backend/app/compliance/evaluator.py",
+        "backend/evaluation/cohorts/generator.py"
+      ],
+      "validation": "SCEN-16 evaluated as NON_COMPLIANT; FCR reduced to 0.00%"
+    },
+    "work_package_b": {
+      "name": "Manuscript Endorsement & Restrictive Wording Detection",
+      "target_scenarios": ["SCEN-24", "SCEN-27"],
+      "status": "COMPLETED",
+      "components_modified": [
+        "backend/app/schemas/raw_extraction.py",
+        "backend/app/schemas/insurance.py",
+        "backend/app/extraction/pipeline.py",
+        "backend/app/compliance/evaluator.py",
+        "backend/evaluation/runners/scenario_runner.py"
+      ],
+      "validation": "SCEN-24 and SCEN-27 routed to REQUIRES_HUMAN_REVIEW with exact reason codes AMBIGUOUS_ENDORSEMENT_TERMS and ENDORSEMENT_AGREEMENT_DATE_MISMATCH"
+    },
+    "work_package_c": {
+      "name": "Deterministic Cross-Document Reconciliation Engine",
+      "target_scenario": "SCEN-36",
+      "status": "COMPLETED",
+      "components_modified": [
+        "backend/app/extraction/pipeline.py",
+        "backend/app/compliance/evaluator.py",
+        "backend/evaluation/runners/scenario_runner.py"
+      ],
+      "validation": "SCEN-36 entity conflict detected and escalated to REQUIRES_HUMAN_REVIEW"
+    },
+    "work_package_d": {
+      "name": "Regression Test Suite & Cohort Verification",
+      "status": "COMPLETED",
+      "components_created": [
+        "backend/tests/test_phase_7_2_3_safeguards.py",
+        "backend/evaluation/reports/generated/phase_7_2_3_cohort_run.json",
+        "backend/evaluation/reports/generated/phase_7_2_3_cohort_run.md",
+        "backend/evaluation/reports/generated/phase_7_2_3_cohort_comparison.json",
+        "backend/evaluation/reports/generated/phase_7_2_3_cohort_comparison.md",
+        "backend/evaluation/reports/generated/phase_7_2_3_implementation_report.json",
+        "backend/evaluation/reports/generated/phase_7_2_3_implementation_report.md"
+      ]
+    }
+  },
+  "metrics_summary": {
+    "false_compliance_rate_fcr": 0.0,
+    "unsafe_compliance_rate_ucr": 0.0,
+    "unsafe_non_pass_rate": 1.0,
+    "uncertainty_recall": 0.7,
+    "human_review_recall": 0.6,
+    "finding_status_accuracy": 0.9,
+    "reason_code_accuracy": 0.7857
+  }
+}

@@ -112,11 +112,11 @@ python -c "from evaluation.cohorts.manifest import verify_manifest; from pathlib
 
 ---
 
-## 5. Interpreting High-Stakes Safety Metrics
+## 5. Interpreting High-Stakes Safety & Uncertainty Metrics
 
 ### False Compliance Rate (FCR)
 $$\mathbf{FCR} = \frac{\text{False COMPLIANT predictions on definitely NON\_COMPLIANT cases}}{\text{Total NON\_COMPLIANT cases}}$$
-- **Meaning:** Measures catastrophic failures where an unqualified subcontractor with missing coverage, expired insurance, or inadequate limits is approved.
+- **Meaning:** Measures catastrophic safety failures where an unqualified subcontractor with missing coverage, expired insurance, or inadequate limits is approved.
 - **Production Target:** $0.00\%$.
 
 ### Unsafe Compliance Rate (UCR)
@@ -124,18 +124,35 @@ $$\mathbf{UCR} = \frac{\text{COMPLIANT predictions across unsafe cases}}{\text{T
 - **Meaning:** Measures any compliance approval granted without human resolution on ambiguous, incomplete, or failing submissions.
 - **Reporting:** If denominator is 0, reported as `N/A`.
 
+### Unsafe Non-Pass Rate vs. True Uncertainty Recall
+To prevent metric conflation, the evaluation engine distinguishes:
+1. **Unsafe Non-Pass Rate:**
+   $$\text{Unsafe Non-Pass Rate} = 100\% - \text{UCR} = \frac{\text{Unsafe GT cases predicted as anything other than COMPLIANT}}{\text{Total unsafe GT cases}}$$
+   Measures the system's ability to prevent unsafe passes. In Phase 7.2, this was $26 / 30 = 86.67\%$.
+2. **Uncertainty Recall (True Routing):**
+   $$\text{Uncertainty Recall} = \frac{\text{GT in } \{\text{Review}, \text{Unable}\} \text{ predicted as Review or Unable}}{\text{Total GT cases in } \{\text{Review}, \text{Unable}\}}$$
+   Measures whether ambiguous, incomplete, or contradiction cases are properly routed to human review or marked unable to determine (rather than being decided as non-compliant or missing evidence). In Phase 7.2, this was $11 / 20 = 55.00\%$.
+3. **Human-Review Recall:**
+   $$\text{Human-Review Recall} = \frac{\text{GT Review cases predicted strictly as REQUIRES\_HUMAN\_REVIEW}}{\text{Total GT Review cases}}$$
+   In Phase 7.2, this was $6 / 15 = 40.00\%$.
+4. **Unable-to-Determine Recall:**
+   $$\text{Unable-to-Determine Recall} = \frac{\text{GT Unable cases predicted strictly as UNABLE\_TO\_DETERMINE}}{\text{Total GT Unable cases}}$$
+   In Phase 7.2, this was $5 / 5 = 100.00\%$.
+
 ---
 
-## 6. Interpreting the Four-Class Confusion Matrix
+## 6. Interpreting the Confusion Matrices
 
-The benchmark reports a $4 \times 4$ confusion matrix:
-- Rows: Ground Truth (`COMPLIANT`, `NON_COMPLIANT`, `REQUIRES_HUMAN_REVIEW`, `UNABLE_TO_DETERMINE`).
-- Columns: Predicted Status (`COMPLIANT`, `NON_COMPLIANT`, `REQUIRES_HUMAN_REVIEW`, `UNABLE_TO_DETERMINE`).
+SubGuard AI reports both:
+1. **Standard Four-Class Confusion Matrix:** Projections where `MISSING_EVIDENCE` is mapped into `UNABLE_TO_DETERMINE` to compare against standard 4-state contracts.
+2. **Five-Class Confusion Matrix:** Exact raw evaluation statuses (`COMPLIANT`, `NON_COMPLIANT`, `REQUIRES_HUMAN_REVIEW`, `UNABLE_TO_DETERMINE`, `MISSING_EVIDENCE`), preserving the distinction between incomplete submissions and missing evidence on complete submissions.
 
 **Key Principles:**
-- Uncertainty is never collapsed into non-compliance for the primary confusion matrix.
-- `UNABLE_TO_DETERMINE` represents incomplete document sets or missing evidence.
-- `REQUIRES_HUMAN_REVIEW` represents contradictions, blanket clauses, or fuzzy entity discrepancies.
+- Uncertainty is never collapsed into non-compliance.
+- Incomplete uploads (`is_document_set_complete=False`) yield `UNABLE_TO_DETERMINE`.
+- Contradictions, manuscript terms, or suffix discrepancies yield `REQUIRES_HUMAN_REVIEW`.
+- Missing required sections or missing endorsement forms on complete uploads yield `MISSING_EVIDENCE` or `NON_COMPLIANT`.
+
 
 ---
 

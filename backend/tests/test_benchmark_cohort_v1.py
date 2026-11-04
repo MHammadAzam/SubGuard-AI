@@ -309,9 +309,78 @@ class TestSafetyAndComplianceMetrics(unittest.TestCase):
         }
         hr_stats = calculate_human_review_metrics([sc_clean, sc_review], results)
         self.assertEqual(hr_stats.uncertainty_recall, 1.0)
+        self.assertEqual(hr_stats.human_review_recall, 1.0)
+        self.assertEqual(hr_stats.unsafe_non_pass_rate, 1.0)
         self.assertEqual(hr_stats.unnecessary_review_rate, 0.0)
         self.assertEqual(hr_stats.missed_review_rate, 0.0)
         self.assertEqual(hr_stats.human_review_precision, 1.0)
+
+    def test_fine_grained_audit_metrics(self):
+        """Test fine-grained uncertainty recall, unsafe non-pass rate, and unable recall."""
+        sc1 = _make_dummy_scenario("S1", ComplianceStatus.NON_COMPLIANT, requires_hr=True)
+        sc2 = _make_dummy_scenario("S2", ComplianceStatus.REQUIRES_HUMAN_REVIEW, requires_hr=True)
+        sc3 = _make_dummy_scenario("S3", ComplianceStatus.UNABLE_TO_DETERMINE, requires_hr=True)
+        sc4 = _make_dummy_scenario("S4", ComplianceStatus.COMPLIANT, requires_hr=False)
+
+        # S1 predicted non_compliant
+        # S2 predicted requires_human_review
+        # S3 predicted compliant (unsafe pass!)
+        # S4 predicted compliant
+        results = {
+            "S1": ScenarioEvaluationResult(
+                scenario_id="S1", title="", expected_status="non_compliant",
+                predicted_status="non_compliant", status_matched=True, processing_status="success",
+            ),
+            "S2": ScenarioEvaluationResult(
+                scenario_id="S2", title="", expected_status="requires_human_review",
+                predicted_status="requires_human_review", status_matched=True, processing_status="success",
+            ),
+            "S3": ScenarioEvaluationResult(
+                scenario_id="S3", title="", expected_status="unable_to_determine",
+                predicted_status="compliant", status_matched=False, processing_status="success",
+            ),
+            "S4": ScenarioEvaluationResult(
+                scenario_id="S4", title="", expected_status="compliant",
+                predicted_status="compliant", status_matched=True, processing_status="success",
+            ),
+        }
+        hr_stats = calculate_human_review_metrics([sc1, sc2, sc3, sc4], results)
+
+        # Unsafe non-pass: S1 and S2 non-pass, S3 is pass. 2 / 3 = 66.67%
+        self.assertEqual(hr_stats.total_unsafe_ground_truth, 3)
+        self.assertEqual(hr_stats.unsafe_non_pass_count, 2)
+        self.assertAlmostEqual(hr_stats.unsafe_non_pass_rate, 0.6667, places=4)
+
+        # Uncertainty recall: GT S2 and S3 (total 2). S2 predicted review, S3 predicted compliant. 1 / 2 = 50.0%
+        self.assertEqual(hr_stats.total_human_review_ground_truth, 2)
+        self.assertEqual(hr_stats.escalated_to_human_review_count, 1)
+        self.assertEqual(hr_stats.uncertainty_recall, 0.5)
+
+        # Human-review recall: GT S2 (total 1). S2 predicted review. 1 / 1 = 100.0%
+        self.assertEqual(hr_stats.total_requires_human_review_gt, 1)
+        self.assertEqual(hr_stats.human_review_recall_count, 1)
+        self.assertEqual(hr_stats.human_review_recall, 1.0)
+
+        # Unable recall: GT S3 (total 1). S3 predicted compliant. 0 / 1 = 0.0%
+        self.assertEqual(hr_stats.total_unable_to_determine_gt, 1)
+        self.assertEqual(hr_stats.unable_to_determine_recall_count, 0)
+        self.assertEqual(hr_stats.unable_to_determine_recall, 0.0)
+
+    def test_five_class_confusion_matrix(self):
+        """Test that missing_evidence is distinguished in 5-class matrix."""
+        sc1 = _make_dummy_scenario("S1", ComplianceStatus.NON_COMPLIANT, requires_hr=True)
+        results = {
+            "S1": ScenarioEvaluationResult(
+                scenario_id="S1", title="", expected_status="non_compliant",
+                predicted_status="missing_evidence", status_matched=False, processing_status="success",
+            ),
+        }
+        sub_metrics = calculate_submission_metrics([sc1], results)
+        # In 4-class, projected to unable_to_determine
+        self.assertEqual(sub_metrics.confusion_matrix_4class["non_compliant"]["unable_to_determine"], 1)
+        # In 5-class, preserved as missing_evidence
+        self.assertEqual(sub_metrics.confusion_matrix_5class["non_compliant"]["missing_evidence"], 1)
+        self.assertEqual(sub_metrics.confusion_matrix_5class["non_compliant"]["unable_to_determine"], 0)
 
 
 class TestAdversarialMetrics(unittest.TestCase):

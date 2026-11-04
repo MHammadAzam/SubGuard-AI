@@ -111,6 +111,13 @@ def get_standard_requirements() -> List[InsuranceRequirement]:
             severity=Severity.CRITICAL,
         ),
         InsuranceRequirement(
+            requirement_id="REQ_GL_EFFECTIVE_DATE",
+            rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+            description="General Liability policy must be effective on or before evaluation date",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            severity=Severity.CRITICAL,
+        ),
+        InsuranceRequirement(
             requirement_id="REQ_NAMED_INSURED",
             rule_type=RequirementType.NAMED_INSURED,
             description="Named Insured must match 'Apex Electrical Contractors LLC'",

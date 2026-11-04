@@ -543,6 +543,11 @@ class ExtractionPipelineService:
                 key_terms=raw_end.key_terms,
                 is_blanket=raw_end.is_blanket,
                 is_coi_checkbox_only=raw_end.is_coi_checkbox_only,
+                is_standard_form=raw_end.is_standard_form,
+                manuscript_clause_detected=raw_end.manuscript_clause_detected,
+                manuscript_status=raw_end.manuscript_status,
+                restriction_description=raw_end.restriction_description,
+                restriction_reason_code=raw_end.restriction_reason_code,
                 evidence=ev,
                 extraction_status=status,
                 confidence=raw_end.confidence,
@@ -566,3 +571,119 @@ class ExtractionPipelineService:
             requires_ocr=False,
             errors=[],
         )
+
+
+def _normalize_entity_for_reconciliation(name: str) -> str:
+    """Normalize entity name for cross-document reconciliation."""
+    if not name:
+        return ""
+    cleaned = re.sub(r"[,\.'\"]", "", name.strip()).lower()
+    tokens = [t for t in cleaned.split() if t not in ("inc", "llc", "corp", "corporation", "co", "company", "ltd", "limited")]
+    return " ".join(tokens)
+
+
+def reconcile_cross_document_set(doc_set: ExtractedDocumentSet) -> List[str]:
+    """Deterministically reconcile cross-document extractions and identify material contradictions.
+    
+    Checks:
+    1. Conflicting effective or expiration dates across coverages for the same coverage type.
+    2. Conflicting limit amounts for equivalent coverage types and limit fields.
+    3. Endorsement applicable_policy numbers that conflict with active coverage policy numbers.
+    4. Endorsement scheduled entities that conflict with the certificate holder or named insured.
+    5. Conflicting entity schedules across multiple endorsements of the same type.
+    
+    Populates doc_set.raw_contradictions_detected and returns the updated list.
+    """
+    new_contradictions: List[str] = []
+
+    # 1. Date reconciliation across coverages with same coverage_type
+    coverages_by_type: dict = {}
+    for c in doc_set.coverages:
+        coverages_by_type.setdefault(c.coverage_type, []).append(c)
+
+    for cov_type, cov_list in coverages_by_type.items():
+        if len(cov_list) > 1:
+            eff_dates = {c.effective_date.date for c in cov_list if c.effective_date and c.effective_date.date}
+            if len(eff_dates) > 1:
+                new_contradictions.append(
+                    f"CONTRADICTORY_POLICY_DATES_DETECTED: Conflicting effective dates for {cov_type.value}: "
+                    f"{[d.isoformat() for d in sorted(eff_dates)]}"
+                )
+            exp_dates = {c.expiration_date.date for c in cov_list if c.expiration_date and c.expiration_date.date}
+            if len(exp_dates) > 1:
+                new_contradictions.append(
+                    f"CONTRADICTORY_POLICY_DATES_DETECTED: Conflicting expiration dates for {cov_type.value}: "
+                    f"{[d.isoformat() for d in sorted(exp_dates)]}"
+                )
+
+            # 2. Limit reconciliation across equivalent coverages
+            limit_fields = [
+                "each_occurrence", "general_aggregate", "products_completed_ops",
+                "personal_adv_injury", "combined_single_limit", "per_accident",
+                "disease_each_employee", "disease_policy_limit"
+            ]
+            for lf in limit_fields:
+                amounts = {
+                    getattr(c, lf).amount_cents
+                    for c in cov_list
+                    if getattr(c, lf, None) and getattr(c, lf).amount_cents is not None
+                }
+                if len(amounts) > 1:
+                    new_contradictions.append(
+                        f"CONTRADICTORY_POLICY_LIMITS_DETECTED: Conflicting {lf} limits for {cov_type.value}: "
+                        f"{[f'${amt/100:,.2f}' for amt in sorted(amounts)]}"
+                    )
+
+    # 3. Policy number reconciliation between endorsements and coverages
+    known_policy_numbers = {c.policy_number.strip().upper() for c in doc_set.coverages if c.policy_number and c.policy_number.strip()}
+    for end in doc_set.endorsements:
+        if end.applicable_policy and end.applicable_policy.strip() and known_policy_numbers:
+            end_pol = end.applicable_policy.strip().upper()
+            if end_pol not in known_policy_numbers:
+                new_contradictions.append(
+                    f"CONTRADICTORY_POLICY_NUMBERS_DETECTED: Endorsement specifies policy '{end.applicable_policy}' "
+                    f"which does not match known policy numbers {sorted(known_policy_numbers)}"
+                )
+
+    # 4. Endorsement scheduled entity vs Certificate Holder / Named Insured
+    cert_holder_norm = _normalize_entity_for_reconciliation(doc_set.certificate_holder.name) if (doc_set.certificate_holder and doc_set.certificate_holder.name) else ""
+    named_insured_norm = _normalize_entity_for_reconciliation(doc_set.named_insured.name) if (doc_set.named_insured and doc_set.named_insured.name) else ""
+
+    for end in doc_set.endorsements:
+        if end.named_entities and not end.is_blanket:
+            if cert_holder_norm:
+                matched_any = False
+                for ent in end.named_entities:
+                    ent_norm = _normalize_entity_for_reconciliation(ent)
+                    if ent_norm and (ent_norm == cert_holder_norm or ent_norm in cert_holder_norm or cert_holder_norm in ent_norm):
+                        matched_any = True
+                        break
+                    if ent_norm and (ent_norm == named_insured_norm or ent_norm in named_insured_norm or named_insured_norm in ent_norm):
+                        matched_any = True
+                        break
+                if not matched_any:
+                    new_contradictions.append(
+                        f"CONTRADICTORY_ENDORSEMENTS_FOUND: Endorsement schedules {end.named_entities} "
+                        f"which conflicts with certificate holder '{doc_set.certificate_holder.name}'"
+                    )
+
+    # 5. Conflicting entity schedules across multiple endorsements
+    ends_by_type: dict = {}
+    for end in doc_set.endorsements:
+        ends_by_type.setdefault(end.endorsement_type, []).append(end)
+
+    for end_type, end_list in ends_by_type.items():
+        if len(end_list) > 1:
+            schedules = [tuple(sorted(e.named_entities)) for e in end_list if e.named_entities and not e.is_blanket]
+            if len(set(schedules)) > 1:
+                new_contradictions.append(
+                    f"CONTRADICTORY_ENDORSEMENTS_FOUND: Multiple endorsements for {end_type.value} have conflicting schedules: {list(set(schedules))}"
+                )
+
+    # Deduplicate and append to document set
+    for c in new_contradictions:
+        if c not in doc_set.raw_contradictions_detected:
+            doc_set.raw_contradictions_detected.append(c)
+
+    return doc_set.raw_contradictions_detected
+

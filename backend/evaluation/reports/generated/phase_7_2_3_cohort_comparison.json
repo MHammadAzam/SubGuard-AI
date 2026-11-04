@@ -1,0 +1,70 @@
+{
+  "baseline_benchmark_id": "audit_cohort_v1_0_0",
+  "phase_7_2_3_benchmark_id": "phase_7_2_3_cohort_run",
+  "manifest_version": "cohort_v1.0.0",
+  "manifest_hash": "adf3195e1001bc20cfdd5ee2366b3d1bcf5a45b74b1e327fc0ffaf1484be1a70",
+  "comparison_metrics": {
+    "submission_accuracy": {
+      "phase_7_2_1": 0.675,
+      "phase_7_2_3": 0.525
+    },
+    "macro_f1": {
+      "phase_7_2_1": 0.6649,
+      "phase_7_2_3": 0.4636
+    },
+    "false_compliance_rate_fcr": {
+      "phase_7_2_1": 10.0,
+      "phase_7_2_3": 0.0
+    },
+    "unsafe_compliance_rate_ucr": {
+      "phase_7_2_1": 13.333333333333334,
+      "phase_7_2_3": 0.0
+    },
+    "unsafe_non_pass_rate": {
+      "phase_7_2_1": 0.8667,
+      "phase_7_2_3": 1.0
+    },
+    "uncertainty_recall": {
+      "phase_7_2_1": 0.55,
+      "phase_7_2_3": 0.7
+    },
+    "human_review_recall": {
+      "phase_7_2_1": 0.4,
+      "phase_7_2_3": 0.6
+    },
+    "finding_status_accuracy": {
+      "phase_7_2_1": 0.9286,
+      "phase_7_2_3": 0.9
+    },
+    "reason_code_accuracy": {
+      "phase_7_2_1": 0.8143,
+      "phase_7_2_3": 0.7857
+    }
+  },
+  "target_scenarios": {
+    "SCEN-16": {
+      "ground_truth": "non_compliant",
+      "phase_7_2_1_pred": "compliant",
+      "phase_7_2_3_pred": "non_compliant",
+      "resolved": true
+    },
+    "SCEN-24": {
+      "ground_truth": "requires_human_review",
+      "phase_7_2_1_pred": "compliant",
+      "phase_7_2_3_pred": "requires_human_review",
+      "resolved": true
+    },
+    "SCEN-27": {
+      "ground_truth": "requires_human_review",
+      "phase_7_2_1_pred": "compliant",
+      "phase_7_2_3_pred": "requires_human_review",
+      "resolved": true
+    },
+    "SCEN-36": {
+      "ground_truth": "requires_human_review",
+      "phase_7_2_1_pred": "compliant",
+      "phase_7_2_3_pred": "requires_human_review",
+      "resolved": true
+    }
+  }
+}

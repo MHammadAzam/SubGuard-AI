@@ -1171,7 +1171,79 @@ def evaluate_endorsement_presence(
             evidence=evidence_list,
         )
 
-    # 6. All endorsements verified with valid supporting evidence
+    # 6. Multi-endorsement check: Detected manuscript restriction or custom exclusion wording
+    manuscript_ends = [
+        e for e in valid_endorsements
+        if e.manuscript_clause_detected or e.manuscript_status == "DETECTED"
+    ]
+    if manuscript_ends:
+        primary = manuscript_ends[0]
+        code = primary.restriction_reason_code or "MANUSCRIPT_RESTRICTION_DETECTED"
+        desc = primary.restriction_description or "non-standard manuscript limitation"
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=Severity.MAJOR,
+            reason_code=code,
+            explanation=(
+                f"{req.required_endorsement_type.value} endorsement form "
+                f"({primary.form_number or 'manuscript'}) contains restrictive wording or custom exclusions: {desc}. "
+                "Human review required to verify whether coverage is legally and contractually sufficient."
+            ),
+            requires_human_review=True,
+            required_value={"required_endorsement": req.required_endorsement_type.value},
+            found_value={
+                "form_numbers": [e.form_number for e in valid_endorsements if e.form_number],
+                "restriction_description": desc,
+            },
+            evidence=evidence_list,
+        )
+
+    # 7. Multi-endorsement check: Non-standard / proprietary endorsement forms without explicit approval
+    non_standard_ends = [e for e in valid_endorsements if e.is_standard_form is False]
+    if non_standard_ends:
+        primary = non_standard_ends[0]
+        code = primary.restriction_reason_code or "NON_STANDARD_ENDORSEMENT_FORM"
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=Severity.MAJOR,
+            reason_code=code,
+            explanation=(
+                f"Extracted {req.required_endorsement_type.value} endorsement form "
+                f"({primary.form_number or 'non-standard'}) is a non-standard or proprietary form without pre-approval. "
+                "Human review required to verify endorsement terms."
+            ),
+            requires_human_review=True,
+            required_value={"required_endorsement": req.required_endorsement_type.value},
+            found_value={"form_numbers": [e.form_number for e in valid_endorsements if e.form_number]},
+            evidence=evidence_list,
+        )
+
+    # 8. Multi-endorsement check: Uncertain manuscript classification
+    uncertain_manuscript_ends = [e for e in valid_endorsements if e.manuscript_status == "UNCERTAIN"]
+    if uncertain_manuscript_ends:
+        primary = uncertain_manuscript_ends[0]
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=Severity.MAJOR,
+            reason_code="ENDORSEMENT_FORM_UNCERTAIN",
+            explanation=(
+                f"{req.required_endorsement_type.value} endorsement form "
+                f"({primary.form_number or 'unspecified'}) has uncertain manuscript classification. "
+                "Human review required."
+            ),
+            requires_human_review=True,
+            required_value={"required_endorsement": req.required_endorsement_type.value},
+            found_value={"form_numbers": [e.form_number for e in valid_endorsements if e.form_number]},
+            evidence=evidence_list,
+        )
+
+    # 9. All endorsements verified with valid supporting evidence
     all_form_numbers = [e.form_number for e in valid_endorsements if e.form_number]
     all_named_entities = []
     for e in valid_endorsements:
@@ -1256,8 +1328,32 @@ class ComplianceEvaluator:
 
         overall_status, requires_review = _aggregate_overall_status(findings)
 
+        # Defensive cross-document reconciliation:
+        # Detect material inconsistencies across documents if not already performed
+        try:
+            from app.extraction.pipeline import reconcile_cross_document_set
+            reconcile_cross_document_set(document_set)
+        except Exception:
+            pass
+
+        # Defensive active-term enforcement:
+        # A reliably extracted future policy effective date must never produce an overall COMPLIANT result,
+        # even if the requirement profile omits POLICY_EFFECTIVE_DATE.
+        has_future_effective_date = False
+        for cov in document_set.coverages:
+            if cov.effective_date and cov.effective_date.date > evaluation_date:
+                if cov.extraction_status not in (ExtractionStatus.UNCERTAIN, ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT) and (
+                    cov.effective_date.confidence is None or cov.effective_date.confidence >= CONFIDENCE_THRESHOLD
+                ):
+                    has_future_effective_date = True
+                    break
+
+        if has_future_effective_date and overall_status == ComplianceStatus.COMPLIANT:
+            overall_status = ComplianceStatus.NON_COMPLIANT
+            requires_review = True
+
         # If there are unresolved document contradictions, overall review cannot be compliant
-        if contradictions and overall_status == ComplianceStatus.COMPLIANT:
+        if (contradictions or document_set.raw_contradictions_detected) and overall_status == ComplianceStatus.COMPLIANT:
             overall_status = ComplianceStatus.REQUIRES_HUMAN_REVIEW
             requires_review = True
 

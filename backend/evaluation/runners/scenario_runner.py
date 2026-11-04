@@ -27,7 +27,7 @@ from uuid import uuid4
 from app.compliance.evaluator import ComplianceEvaluator
 from app.documents.processor import PDFProcessor
 from app.extraction.ocr import MockOCRProvider
-from app.extraction.pipeline import ExtractionPipelineService
+from app.extraction.pipeline import ExtractionPipelineService, reconcile_cross_document_set
 from app.extraction.providers.base import BaseExtractionProvider
 from app.schemas.insurance import (
     ComplianceStatus,
@@ -241,8 +241,47 @@ class ScenarioBenchmarkMockProvider(BaseExtractionProvider):
         # ---------------------------------------------------------------------
         raw_endorsements: List[RawEndorsement] = []
 
-        # Adversarial Cases Handling
-        if "SCEN-38" in document_id:
+        # Adversarial & Manuscript Cases Handling
+        if "SCEN-24" in document_id and "DOC2" in document_id:
+            # Endorsement with non-standard restrictive manuscript provisions
+            raw_endorsements.append(
+                RawEndorsement(
+                    endorsement_type="additional_insured",
+                    form_number="CG 20 10 04 13",
+                    is_standard_form=False,
+                    manuscript_clause_detected=True,
+                    manuscript_status="DETECTED",
+                    restriction_reason_code="AMBIGUOUS_ENDORSEMENT_TERMS",
+                    restriction_description="Endorsement contains non-standard restrictive project provisions",
+                    named_entities=["General Contractor Corp"],
+                    evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="ADDITIONAL INSURED - OWNERS, LESSEES OR CONTRACTORS",
+                        confidence=0.95,
+                    ),
+                    confidence=0.95,
+                )
+            )
+        elif "SCEN-27" in document_id and "DOC2" in document_id:
+            # Endorsement references agreement dated prior to prime contract
+            raw_endorsements.append(
+                RawEndorsement(
+                    endorsement_type="additional_insured",
+                    form_number="CG 20 10 04 13",
+                    manuscript_clause_detected=True,
+                    manuscript_status="DETECTED",
+                    restriction_reason_code="ENDORSEMENT_AGREEMENT_DATE_MISMATCH",
+                    restriction_description="Endorsement references agreement dated prior to prime contract",
+                    named_entities=["General Contractor Corp"],
+                    evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="ADDITIONAL INSURED - OWNERS, LESSEES OR CONTRACTORS",
+                        confidence=0.95,
+                    ),
+                    confidence=0.95,
+                )
+            )
+        elif "SCEN-38" in document_id:
             # Citing INSURED header as endorsement proof (semantic support unverified)
             raw_endorsements.append(
                 RawEndorsement(
@@ -296,12 +335,32 @@ class ScenarioBenchmarkMockProvider(BaseExtractionProvider):
                 if end_quote:
                     break
 
+            end_named_entities = []
+            end_policy = None
+            for line in full_text.split("\n"):
+                if "Schedule:" in line:
+                    sched_val = line.replace("Schedule:", "").strip()
+                    if sched_val:
+                        end_named_entities.append(sched_val)
+                elif "Name of Additional Insured:" in line:
+                    sched_val = line.replace("Name of Additional Insured:", "").strip()
+                    if sched_val:
+                        end_named_entities.append(sched_val)
+                elif "POLICY NUMBER:" in line:
+                    m_pol = re.search(r"POLICY NUMBER:\s*([A-Za-z0-9\-]+)", line)
+                    if m_pol:
+                        end_policy = m_pol.group(1).strip()
+
+            if not end_named_entities and "General Contractor Corp" in full_text:
+                end_named_entities = ["General Contractor Corp"]
+
             raw_endorsements.append(
                 RawEndorsement(
                     endorsement_type="additional_insured",
                     form_number=form_no,
+                    applicable_policy=end_policy,
                     is_blanket=is_blanket,
-                    named_entities=["General Contractor Corp"] if "General Contractor Corp" in full_text else [],
+                    named_entities=end_named_entities,
                     evidence=RawEvidenceQuote(
                         page_number=end_page,
                         source_text=end_quote or "ADDITIONAL INSURED",
@@ -404,12 +463,6 @@ def run_single_scenario(
             combined_endorsements.extend(ds.endorsements)
             raw_contradictions.extend(ds.raw_contradictions_detected)
 
-        # Cross-document contradiction checks for specific scenarios
-        if scen_id == "SCEN-34":
-            raw_contradictions.append("CONTRADICTORY_POLICY_NUMBERS_DETECTED: COI has GL-98765432 but endorsement has GL-11223344")
-        elif scen_id == "SCEN-37":
-            raw_contradictions.append("CONTRADICTORY_ENDORSEMENTS_FOUND: Conflicting entity schedules on CG 20 10 forms")
-
         composite_doc_set = ExtractedDocumentSet(
             subcontractor_id=scenario.subcontractor_id,
             documents_submitted=doc_types_submitted,
@@ -420,6 +473,9 @@ def run_single_scenario(
             endorsements=combined_endorsements,
             raw_contradictions_detected=raw_contradictions,
         )
+
+        # Deterministic cross-document reconciliation
+        reconcile_cross_document_set(composite_doc_set)
 
         # 3. Deterministic compliance evaluation
         review_result = evaluator.evaluate(
@@ -508,10 +564,11 @@ def execute_cohort_benchmark(
     annotations_path: Path,
     output_dir: Path,
     scenario_filter: Optional[str] = None,
+    report_filename_prefix: Optional[str] = None,
 ) -> ScenarioBenchmarkReport:
     """Run full benchmark cohort, record metrics, and generate output reports."""
     start_total_time = time.time()
-    benchmark_id = f"scenario_bench_{uuid4().hex[:8]}"
+    benchmark_id = report_filename_prefix or f"scenario_bench_{uuid4().hex[:8]}"
     now_iso = datetime.now(timezone.utc).isoformat()
 
     # 1. Manifest verification
@@ -696,7 +753,9 @@ def generate_markdown_report(report: ScenarioBenchmarkReport, md_path: Path) -> 
         f"- **Macro F1 Score:** {sub.macro_f1:.4f}",
         f"- **Weighted F1 Score:** {sub.weighted_f1:.4f}",
         f"",
-        f"### Four-Class Confusion Matrix",
+        f"### Four-Class Confusion Matrix (Standard Projection)",
+        f"",
+        f"*Note: In the standard 4-class projection, `MISSING_EVIDENCE` predictions are mapped into `UNABLE_TO_DETERMINE`.*",
         f"",
         f"| Ground Truth \\ Predicted | COMPLIANT | NON_COMPLIANT | REQUIRES_HUMAN_REVIEW | UNABLE_TO_DETERMINE |",
         f"| :--- | :---: | :---: | :---: | :---: |",
@@ -706,6 +765,20 @@ def generate_markdown_report(report: ScenarioBenchmarkReport, md_path: Path) -> 
         row = sub.confusion_matrix_4class.get(gt_cls, {})
         lines.append(
             f"| **{gt_cls.upper()}** | {row.get('compliant', 0)} | {row.get('non_compliant', 0)} | {row.get('requires_human_review', 0)} | {row.get('unable_to_determine', 0)} |"
+        )
+
+    lines.extend([
+        f"",
+        f"### Five-Class Confusion Matrix (Exact Raw Statuses)",
+        f"",
+        f"| Ground Truth \\ Predicted | COMPLIANT | NON_COMPLIANT | REQUIRES_HUMAN_REVIEW | UNABLE_TO_DETERMINE | MISSING_EVIDENCE |",
+        f"| :--- | :---: | :---: | :---: | :---: | :---: |",
+    ])
+
+    for gt_cls in ["compliant", "non_compliant", "requires_human_review", "unable_to_determine"]:
+        row5 = sub.confusion_matrix_5class.get(gt_cls, {})
+        lines.append(
+            f"| **{gt_cls.upper()}** | {row5.get('compliant', 0)} | {row5.get('non_compliant', 0)} | {row5.get('requires_human_review', 0)} | {row5.get('unable_to_determine', 0)} | {row5.get('missing_evidence', 0)} |"
         )
 
     lines.extend([
@@ -725,14 +798,18 @@ def generate_markdown_report(report: ScenarioBenchmarkReport, md_path: Path) -> 
         f"",
         f"---",
         f"",
-        f"## 4. Human-Review & Uncertainty Metrics",
+        f"## 4. Human-Review & Uncertainty Metrics (Phase 7.2.1 Audit)",
         f"",
-        f"| Metric | Score | Details |",
-        f"| :--- | :---: | :--- |",
-        f"| **Uncertainty Recall** | {hr.uncertainty_recall * 100:.2f}% | Ground-truth uncertain submissions successfully escalated |",
-        f"| **Review Precision** | {hr.human_review_precision * 100:.2f}% | Precision of human review escalation trigger |",
-        f"| **Unnecessary Review Rate** | {hr.unnecessary_review_rate * 100:.2f}% | Clean submissions unnecessarily routed to review |",
-        f"| **Missed Review Rate** | {hr.missed_review_rate * 100:.2f}% | Uncertain submissions missed by review filter |",
+        f"| Metric | Score | Numerator / Denominator | Definition / Scope |",
+        f"| :--- | :---: | :---: | :--- |",
+        f"| **Unsafe Non-Pass Rate** | {hr.unsafe_non_pass_rate * 100:.2f}% | {hr.unsafe_non_pass_count} / {hr.total_unsafe_ground_truth} | All unsafe GT cases predicted anything other than COMPLIANT (100% - UCR) |",
+        f"| **Uncertainty Recall (Routing)** | {hr.uncertainty_recall * 100:.2f}% | {hr.escalated_to_human_review_count} / {hr.total_human_review_ground_truth} | GT in {{Review, Unable}} predicted as Review or Unable |",
+        f"| **Human-Review Recall** | {hr.human_review_recall * 100:.2f}% | {hr.human_review_recall_count} / {hr.total_requires_human_review_gt} | GT Review predicted strictly as REQUIRES_HUMAN_REVIEW |",
+        f"| **Unable-to-Determine Recall** | {hr.unable_to_determine_recall * 100:.2f}% | {hr.unable_to_determine_recall_count} / {hr.total_unable_to_determine_gt} | GT Unable predicted strictly as UNABLE_TO_DETERMINE |",
+        f"| **Review Precision** | {hr.human_review_precision * 100:.2f}% | - | Predicted Review cases that were ground-truth Review |",
+        f"| **Unnecessary Review Rate** | {hr.unnecessary_review_rate * 100:.2f}% | {hr.unnecessary_review_count} / 10 | Clean compliant submissions routed to review |",
+        f"| **Missed Review Rate** | {hr.missed_review_rate * 100:.2f}% | {hr.missed_review_count} / {hr.total_requires_human_review_gt} | GT Review cases not predicted as Review |",
+
         f"",
         f"---",
         f"",
@@ -793,6 +870,12 @@ def main() -> None:
         default=None,
         help="Run only a single scenario, e.g. SCEN-01",
     )
+    parser.add_argument(
+        "--report-prefix",
+        type=str,
+        default=None,
+        help="Optional prefix/name for generated reports, e.g. audit_report_cohort_v1.0.0",
+    )
     args = parser.parse_args()
 
     execute_cohort_benchmark(
@@ -800,6 +883,7 @@ def main() -> None:
         annotations_path=args.annotations,
         output_dir=args.output_dir,
         scenario_filter=args.scenario,
+        report_filename_prefix=args.report_prefix,
     )
 
 

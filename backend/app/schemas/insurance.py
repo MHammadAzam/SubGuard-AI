@@ -182,6 +182,26 @@ class EndorsementExtraction(BaseModel):
         default=False,
         description="True if indication came ONLY from a checked box on COI without separate endorsement text/wording"
     )
+    is_standard_form: Optional[bool] = Field(
+        default=True,
+        description="True if standard ISO/industry form, False for non-standard/manuscript"
+    )
+    manuscript_clause_detected: Optional[bool] = Field(
+        default=False,
+        description="True if restrictive manuscript modifications or exclusionary conditions were detected"
+    )
+    manuscript_status: Optional[str] = Field(
+        default=None,
+        description="'DETECTED', 'NOT_DETECTED', or 'UNCERTAIN'"
+    )
+    restriction_description: Optional[str] = Field(
+        default=None,
+        description="Description of detected manuscript restriction or exclusion"
+    )
+    restriction_reason_code: Optional[str] = Field(
+        default=None,
+        description="Specific reason code for detected limitation or restriction"
+    )
     evidence: Optional[EvidenceReference] = None
     extraction_status: ExtractionStatus = ExtractionStatus.EXTRACTED
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
@@ -262,3 +282,40 @@ class ComplianceReviewResult(BaseModel):
     requires_human_review: bool
     findings: List[ComplianceFinding]
     evaluated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+def validate_requirement_profile(
+    requirements: List[InsuranceRequirement],
+    enforce_effective_date_baseline: bool = True,
+) -> List[InsuranceRequirement]:
+    """Validate and normalize an insurance requirement profile.
+    
+    If enforce_effective_date_baseline is True, verifies that any coverage line evaluating
+    POLICY_EXPIRATION also includes a corresponding POLICY_EFFECTIVE_DATE requirement.
+    If omitted, a corresponding baseline POLICY_EFFECTIVE_DATE requirement is automatically injected
+    to guarantee full policy active-term protection.
+    """
+    validated = list(requirements)
+    if not enforce_effective_date_baseline:
+        return validated
+
+    expiration_cov_types = {
+        r.coverage_type for r in requirements if r.rule_type == RequirementType.POLICY_EXPIRATION and r.coverage_type
+    }
+    effective_cov_types = {
+        r.coverage_type for r in requirements if r.rule_type == RequirementType.POLICY_EFFECTIVE_DATE and r.coverage_type
+    }
+
+    missing_cov_types = expiration_cov_types - effective_cov_types
+    for cov_type in sorted(missing_cov_types, key=lambda c: c.value):
+        validated.append(
+            InsuranceRequirement(
+                requirement_id=f"REQ_{cov_type.value.upper()}_EFFECTIVE_DATE",
+                rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+                description=f"{cov_type.value} policy must be effective on or before evaluation date",
+                coverage_type=cov_type,
+                severity=Severity.CRITICAL,
+            )
+        )
+    return validated
+

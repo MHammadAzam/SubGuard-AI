@@ -195,6 +195,7 @@ class SubmissionMetricStats(BaseModel):
     macro_f1: float = 0.0
     weighted_f1: float = 0.0
     confusion_matrix_4class: Dict[str, Dict[str, int]] = Field(default_factory=dict)
+    confusion_matrix_5class: Dict[str, Dict[str, int]] = Field(default_factory=dict)
     class_metrics: Dict[str, Dict[str, float]] = Field(default_factory=dict)
 
 
@@ -208,6 +209,17 @@ class HumanReviewMetricStats(BaseModel):
     escalated_to_human_review_count: int = 0
     unnecessary_review_count: int = 0
     missed_review_count: int = 0
+
+    # Fine-grained Phase 7.2.1 audit metrics
+    unsafe_non_pass_rate: float = 0.0
+    unsafe_non_pass_count: int = 0
+    total_unsafe_ground_truth: int = 0
+    human_review_recall: float = 0.0
+    human_review_recall_count: int = 0
+    total_requires_human_review_gt: int = 0
+    unable_to_determine_recall: float = 0.0
+    unable_to_determine_recall_count: int = 0
+    total_unable_to_determine_gt: int = 0
 
 
 class ScenarioEvidenceMetricStats(BaseModel):

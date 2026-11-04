@@ -66,6 +66,11 @@ class RawEndorsement(BaseModel):
     key_terms: List[str] = Field(default_factory=list)
     is_blanket: bool = False
     is_coi_checkbox_only: bool = False
+    is_standard_form: Optional[bool] = Field(default=True, description="True if standard ISO/industry form")
+    manuscript_clause_detected: Optional[bool] = Field(default=False, description="True if restrictive manuscript modifications detected")
+    manuscript_status: Optional[str] = Field(default=None, description="'DETECTED', 'NOT_DETECTED', or 'UNCERTAIN'")
+    restriction_description: Optional[str] = Field(default=None, description="Description of detected manuscript restriction or exclusion")
+    restriction_reason_code: Optional[str] = Field(default=None, description="Specific reason code if custom restriction detected")
     evidence: Optional[RawEvidenceQuote] = None
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 

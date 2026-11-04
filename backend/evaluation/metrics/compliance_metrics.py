@@ -31,6 +31,15 @@ FOUR_CLASSES = [
 ]
 
 
+FIVE_CLASSES = [
+    ComplianceStatus.COMPLIANT.value,
+    ComplianceStatus.NON_COMPLIANT.value,
+    ComplianceStatus.REQUIRES_HUMAN_REVIEW.value,
+    ComplianceStatus.UNABLE_TO_DETERMINE.value,
+    ComplianceStatus.MISSING_EVIDENCE.value,
+]
+
+
 def calculate_safety_metrics(
     scenarios: List[ScenarioGroundTruth],
     results: Dict[str, ScenarioEvaluationResult],
@@ -118,10 +127,15 @@ def calculate_submission_metrics(
     scenarios: List[ScenarioGroundTruth],
     results: Dict[str, ScenarioEvaluationResult],
 ) -> SubmissionMetricStats:
-    """Calculate 4-class confusion matrix, overall accuracy, Macro F1, and Weighted F1."""
-    # Initialize 4x4 matrix
-    confusion: Dict[str, Dict[str, int]] = {
+    """Calculate 4-class and 5-class confusion matrices, overall accuracy, Macro F1, and Weighted F1."""
+    # 4-class confusion matrix (missing_evidence projected into unable_to_determine)
+    confusion_4: Dict[str, Dict[str, int]] = {
         gt: {pred: 0 for pred in FOUR_CLASSES} for gt in FOUR_CLASSES
+    }
+
+    # 5-class confusion matrix (preserving missing_evidence explicitly)
+    confusion_5: Dict[str, Dict[str, int]] = {
+        gt: {pred: 0 for pred in FIVE_CLASSES} for gt in FIVE_CLASSES
     }
 
     exact_matches = 0
@@ -130,25 +144,31 @@ def calculate_submission_metrics(
     for sc in scenarios:
         gt_status = sc.expected_overall_status.value
         res = results.get(sc.scenario_id)
-        pred_status = res.predicted_status if (res and res.predicted_status in FOUR_CLASSES) else ComplianceStatus.UNABLE_TO_DETERMINE.value
+        raw_pred = res.predicted_status if (res and res.predicted_status) else ComplianceStatus.UNABLE_TO_DETERMINE.value
 
-        if gt_status in confusion and pred_status in confusion[gt_status]:
-            confusion[gt_status][pred_status] += 1
+        # 5-class recording
+        if gt_status in confusion_5 and raw_pred in confusion_5[gt_status]:
+            confusion_5[gt_status][raw_pred] += 1
+
+        # 4-class recording (projecting missing_evidence -> unable_to_determine)
+        pred_4 = raw_pred if raw_pred in FOUR_CLASSES else ComplianceStatus.UNABLE_TO_DETERMINE.value
+        if gt_status in confusion_4 and pred_4 in confusion_4[gt_status]:
+            confusion_4[gt_status][pred_4] += 1
 
         if res and res.status_matched:
             exact_matches += 1
 
     overall_acc = (exact_matches / total) if total > 0 else 0.0
 
-    # Per-class precision, recall, F1
+    # Per-class precision, recall, F1 computed over 4-class projection
     class_metrics: Dict[str, Dict[str, float]] = {}
     f1_list: List[float] = []
     support_list: List[int] = []
 
     for cls in FOUR_CLASSES:
-        tp = confusion[cls][cls]
-        fp = sum(confusion[other][cls] for other in FOUR_CLASSES if other != cls)
-        fn = sum(confusion[cls][other] for other in FOUR_CLASSES if other != cls)
+        tp = confusion_4[cls][cls]
+        fp = sum(confusion_4[other][cls] for other in FOUR_CLASSES if other != cls)
+        fn = sum(confusion_4[cls][other] for other in FOUR_CLASSES if other != cls)
         support = tp + fn
 
         precision = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0
@@ -179,7 +199,8 @@ def calculate_submission_metrics(
         overall_accuracy=round(overall_acc, 4),
         macro_f1=round(macro_f1, 4),
         weighted_f1=round(weighted_f1, 4),
-        confusion_matrix_4class=confusion,
+        confusion_matrix_4class=confusion_4,
+        confusion_matrix_5class=confusion_5,
         class_metrics=class_metrics,
     )
 
@@ -224,64 +245,100 @@ def calculate_human_review_metrics(
     scenarios: List[ScenarioGroundTruth],
     results: Dict[str, ScenarioEvaluationResult],
 ) -> HumanReviewMetricStats:
-    """Calculate uncertainty recall, review precision, unnecessary review rate, and missed review rate."""
-    total_hr_gt = 0
-    escalated_count = 0
-    unnecessary_count = 0
-    missed_count = 0
-
-    for sc in scenarios:
-        res = results.get(sc.scenario_id)
-        # Ground truth uncertainty: expected review requested OR status is review/unable
-        gt_uncertain = (
-            sc.expected_requires_human_review
-            or sc.expected_overall_status in {
-                ComplianceStatus.REQUIRES_HUMAN_REVIEW,
-                ComplianceStatus.UNABLE_TO_DETERMINE,
-            }
-        )
-        # Predicted uncertainty
-        pred_uncertain = False
-        if res and res.processing_status == "success":
-            pred_uncertain = (
-                res.predicted_requires_human_review
-                or res.predicted_status in {
-                    ComplianceStatus.REQUIRES_HUMAN_REVIEW.value,
-                    ComplianceStatus.UNABLE_TO_DETERMINE.value,
-                }
-            )
-
-        if gt_uncertain:
-            total_hr_gt += 1
-            if pred_uncertain:
-                escalated_count += 1
-            else:
-                missed_count += 1
-        else:
-            # Clearly compliant or clearly non-compliant without review flag
-            if pred_uncertain:
-                unnecessary_count += 1
-
-    total_pred_escalated = escalated_count + unnecessary_count
-
-    uncertainty_recall = (escalated_count / total_hr_gt) if total_hr_gt > 0 else 1.0
-    hr_precision = (escalated_count / total_pred_escalated) if total_pred_escalated > 0 else 1.0
-    unnecessary_rate = (
-        unnecessary_count / (len(scenarios) - total_hr_gt)
-        if (len(scenarios) - total_hr_gt) > 0
-        else 0.0
+    """Calculate fine-grained uncertainty routing, unsafe non-pass rate, and recall metrics."""
+    # 1. Unsafe Non-Pass Rate
+    # Ground-truth unsafe: non_compliant, requires_human_review, unable_to_determine (N=30)
+    unsafe_statuses = {
+        ComplianceStatus.NON_COMPLIANT,
+        ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+        ComplianceStatus.UNABLE_TO_DETERMINE,
+    }
+    unsafe_gt_scenarios = [s for s in scenarios if s.expected_overall_status in unsafe_statuses]
+    total_unsafe_gt = len(unsafe_gt_scenarios)
+    unsafe_non_pass_count = sum(
+        1 for s in unsafe_gt_scenarios
+        if results.get(s.scenario_id) and results[s.scenario_id].predicted_status != ComplianceStatus.COMPLIANT.value
     )
-    missed_rate = (missed_count / total_hr_gt) if total_hr_gt > 0 else 0.0
+    unsafe_non_pass_rate = (unsafe_non_pass_count / total_unsafe_gt) if total_unsafe_gt > 0 else 1.0
+
+    # 2. Uncertainty Recall (True Uncertainty Routing)
+    # Ground truth cases in {REQUIRES_HUMAN_REVIEW, UNABLE_TO_DETERMINE} predicted as either of those two
+    uncertain_statuses = {
+        ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+        ComplianceStatus.UNABLE_TO_DETERMINE,
+    }
+    uncertain_gt_scenarios = [s for s in scenarios if s.expected_overall_status in uncertain_statuses]
+    total_uncertain_gt = len(uncertain_gt_scenarios)
+    uncertain_correct_count = sum(
+        1 for s in uncertain_gt_scenarios
+        if results.get(s.scenario_id) and results[s.scenario_id].predicted_status in {
+            ComplianceStatus.REQUIRES_HUMAN_REVIEW.value,
+            ComplianceStatus.UNABLE_TO_DETERMINE.value,
+        }
+    )
+    uncertainty_recall = (uncertain_correct_count / total_uncertain_gt) if total_uncertain_gt > 0 else 1.0
+
+    # 3. Human-Review Recall
+    # Ground-truth REQUIRES_HUMAN_REVIEW predicted strictly REQUIRES_HUMAN_REVIEW
+    review_gt_scenarios = [s for s in scenarios if s.expected_overall_status == ComplianceStatus.REQUIRES_HUMAN_REVIEW]
+    total_review_gt = len(review_gt_scenarios)
+    review_correct_count = sum(
+        1 for s in review_gt_scenarios
+        if results.get(s.scenario_id) and results[s.scenario_id].predicted_status == ComplianceStatus.REQUIRES_HUMAN_REVIEW.value
+    )
+    human_review_recall = (review_correct_count / total_review_gt) if total_review_gt > 0 else 1.0
+
+    # 4. Unable-to-Determine Recall
+    # Ground-truth UNABLE_TO_DETERMINE predicted strictly UNABLE_TO_DETERMINE
+    unable_gt_scenarios = [s for s in scenarios if s.expected_overall_status == ComplianceStatus.UNABLE_TO_DETERMINE]
+    total_unable_gt = len(unable_gt_scenarios)
+    unable_correct_count = sum(
+        1 for s in unable_gt_scenarios
+        if results.get(s.scenario_id) and results[s.scenario_id].predicted_status == ComplianceStatus.UNABLE_TO_DETERMINE.value
+    )
+    unable_to_determine_recall = (unable_correct_count / total_unable_gt) if total_unable_gt > 0 else 1.0
+
+    # 5. Human-Review Precision (Predicted review that was truly GT review)
+    total_pred_review = sum(
+        1 for s in scenarios
+        if results.get(s.scenario_id) and results[s.scenario_id].predicted_status == ComplianceStatus.REQUIRES_HUMAN_REVIEW.value
+    )
+    hr_precision = (review_correct_count / total_pred_review) if total_pred_review > 0 else 1.0
+
+    # 6. Unnecessary Review Rate (Clean compliant predicted review)
+    compliant_scenarios = [s for s in scenarios if s.expected_overall_status == ComplianceStatus.COMPLIANT]
+    total_compliant = len(compliant_scenarios)
+    unnecessary_review_count = sum(
+        1 for s in compliant_scenarios
+        if results.get(s.scenario_id) and results[s.scenario_id].predicted_status in {
+            ComplianceStatus.REQUIRES_HUMAN_REVIEW.value,
+            ComplianceStatus.UNABLE_TO_DETERMINE.value,
+        }
+    )
+    unnecessary_rate = (unnecessary_review_count / total_compliant) if total_compliant > 0 else 0.0
+
+    # 7. Missed Review Rate
+    missed_review_count = total_review_gt - review_correct_count
+    missed_rate = (missed_review_count / total_review_gt) if total_review_gt > 0 else 0.0
 
     return HumanReviewMetricStats(
         uncertainty_recall=round(uncertainty_recall, 4),
         human_review_precision=round(hr_precision, 4),
         unnecessary_review_rate=round(unnecessary_rate, 4),
         missed_review_rate=round(missed_rate, 4),
-        total_human_review_ground_truth=total_hr_gt,
-        escalated_to_human_review_count=total_pred_escalated,
-        unnecessary_review_count=unnecessary_count,
-        missed_review_count=missed_count,
+        total_human_review_ground_truth=total_uncertain_gt,
+        escalated_to_human_review_count=uncertain_correct_count,
+        unnecessary_review_count=unnecessary_review_count,
+        missed_review_count=missed_review_count,
+        unsafe_non_pass_rate=round(unsafe_non_pass_rate, 4),
+        unsafe_non_pass_count=unsafe_non_pass_count,
+        total_unsafe_ground_truth=total_unsafe_gt,
+        human_review_recall=round(human_review_recall, 4),
+        human_review_recall_count=review_correct_count,
+        total_requires_human_review_gt=total_review_gt,
+        unable_to_determine_recall=round(unable_to_determine_recall, 4),
+        unable_to_determine_recall_count=unable_correct_count,
+        total_unable_to_determine_gt=total_unable_gt,
     )
 
 

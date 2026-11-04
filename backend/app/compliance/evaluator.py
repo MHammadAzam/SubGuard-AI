@@ -968,6 +968,21 @@ def evaluate_named_insured(
         )
 
 
+def is_recognized_standard_form(form_number: Optional[str]) -> bool:
+    """Check if form number corresponds to a recognized standard ISO or bureau endorsement."""
+    if not form_number:
+        return False
+    norm = form_number.upper().strip()
+    standard_prefixes = (
+        "CG 20", "CG 21", "CG 24", "CG 25", "CG 00",
+        "CA 20", "CA 00",
+        "WC 00", "WC 04",
+        "IL 00", "IL 12",
+        "BP 04", "CP 00",
+    )
+    return any(norm.startswith(p) for p in standard_prefixes)
+
+
 def evaluate_endorsement_presence(
     req: InsuranceRequirement,
     doc_set: ExtractedDocumentSet,
@@ -1171,10 +1186,34 @@ def evaluate_endorsement_presence(
             evidence=evidence_list,
         )
 
+    # 5b. Multi-endorsement check: Conflicting entity schedules across multiple endorsements
+    if len(valid_endorsements) > 1:
+        schedules = [
+            tuple(sorted(e.named_entities))
+            for e in valid_endorsements
+            if e.named_entities and not e.is_blanket
+        ]
+        if len(set(schedules)) > 1:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+                severity=Severity.MAJOR,
+                reason_code="CONTRADICTORY_ENDORSEMENTS_FOUND",
+                explanation=(
+                    f"Multiple endorsements for {req.required_endorsement_type.value} have conflicting schedules: "
+                    f"{list(set(schedules))}. Human review required."
+                ),
+                requires_human_review=True,
+                required_value={"required_endorsement": req.required_endorsement_type.value},
+                found_value={"conflicting_schedules": [list(s) for s in set(schedules)]},
+                evidence=evidence_list,
+            )
+
     # 6. Multi-endorsement check: Detected manuscript restriction or custom exclusion wording
     manuscript_ends = [
         e for e in valid_endorsements
-        if e.manuscript_clause_detected or e.manuscript_status == "DETECTED"
+        if e.manuscript_clause_detected is True or e.manuscript_status == "DETECTED"
     ]
     if manuscript_ends:
         primary = manuscript_ends[0]
@@ -1222,19 +1261,26 @@ def evaluate_endorsement_presence(
             evidence=evidence_list,
         )
 
-    # 8. Multi-endorsement check: Uncertain manuscript classification
-    uncertain_manuscript_ends = [e for e in valid_endorsements if e.manuscript_status == "UNCERTAIN"]
-    if uncertain_manuscript_ends:
-        primary = uncertain_manuscript_ends[0]
+    # 8. Multi-endorsement check: Uncertain or unknown form / manuscript classification
+    # Unknown extraction values cannot silently evaluate to COMPLIANT
+    uncertain_form_ends = [
+        e for e in valid_endorsements
+        if e.is_standard_form is not True
+        or e.manuscript_clause_detected is not False
+        or e.manuscript_status != "NOT_DETECTED"
+    ]
+    if uncertain_form_ends:
+        primary = uncertain_form_ends[0]
+        code = primary.restriction_reason_code or "ENDORSEMENT_FORM_UNCERTAIN"
         return ComplianceFinding(
             requirement_id=req.requirement_id,
             rule_type=req.rule_type,
             status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
             severity=Severity.MAJOR,
-            reason_code="ENDORSEMENT_FORM_UNCERTAIN",
+            reason_code=code,
             explanation=(
                 f"{req.required_endorsement_type.value} endorsement form "
-                f"({primary.form_number or 'unspecified'}) has uncertain manuscript classification. "
+                f"({primary.form_number or 'unspecified'}) has uncertain standard form or manuscript classification. "
                 "Human review required."
             ),
             requires_human_review=True,
@@ -1243,11 +1289,73 @@ def evaluate_endorsement_presence(
             evidence=evidence_list,
         )
 
+    # 8b. Multi-endorsement check: Negative manuscript classification ('NOT_DETECTED') requires a defensible verification basis
+    # A provider returning NOT_DETECTED without defensible proof/basis cannot be accepted as verified evidence.
+    unsupported_negative_ends = [
+        e for e in valid_endorsements
+        if e.manuscript_status == "NOT_DETECTED"
+        and (
+            not getattr(e, "manuscript_verification_basis", None)
+            or e.manuscript_verification_basis not in ("unmodified_standard_form", "full_text_inspection")
+            or not is_recognized_standard_form(e.form_number)
+        )
+    ]
+    if unsupported_negative_ends:
+        primary = unsupported_negative_ends[0]
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+            severity=Severity.MAJOR,
+            reason_code="MANUSCRIPT_VERIFICATION_UNSUPPORTED",
+            explanation=(
+                f"{req.required_endorsement_type.value} endorsement form "
+                f"({primary.form_number or 'unspecified'}) has a negative manuscript claim ('NOT_DETECTED') "
+                "that lacks a defensible verification basis or verified standard form provenance. Human review required."
+            ),
+            requires_human_review=True,
+            required_value={"required_endorsement": req.required_endorsement_type.value},
+            found_value={
+                "form_numbers": [e.form_number for e in valid_endorsements if e.form_number],
+                "manuscript_verification_basis": getattr(primary, "manuscript_verification_basis", None),
+            },
+            evidence=evidence_list,
+        )
+
     # 9. All endorsements verified with valid supporting evidence
     all_form_numbers = [e.form_number for e in valid_endorsements if e.form_number]
     all_named_entities = []
     for e in valid_endorsements:
         all_named_entities.extend(e.named_entities)
+
+    # Check contract-specific required entity on endorsement if explicitly specified
+    if req.required_entity_name:
+        matched_entity = False
+        for ent in all_named_entities:
+            is_match, _ = compare_entity_names(
+                extracted_name=ent,
+                required_name=req.required_entity_name,
+                require_exact=req.require_exact_name_match,
+            )
+            if is_match:
+                matched_entity = True
+                break
+        if not matched_entity:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.NON_COMPLIANT,
+                severity=req.severity,
+                reason_code="ENDORSEMENT_ENTITY_MISMATCH",
+                explanation=(
+                    f"Required entity '{req.required_entity_name}' was not found in endorsement schedule "
+                    f"{list(set(all_named_entities))}."
+                ),
+                requires_human_review=True,
+                required_value={"required_entity_name": req.required_entity_name},
+                found_value={"scheduled_entities": list(set(all_named_entities))},
+                evidence=evidence_list,
+            )
 
     primary_form = all_form_numbers[0] if all_form_numbers else "Standard"
 

@@ -35,9 +35,11 @@ from app.extraction.providers.base import (
 )
 from app.schemas.insurance import (
     CoverageExtraction,
+    CoverageType,
     DateValue,
     DocumentType,
     EndorsementExtraction,
+    EndorsementType,
     EntityInfo,
     EvidenceReference,
     ExtractedDocumentSet,
@@ -189,6 +191,25 @@ def _verify_endorsement_semantic_support(end_raw: RawEndorsement, quote_text: Op
         return True
 
     return False
+
+
+MANUSCRIPT_RESTRICTIVE_PATTERNS = [
+    r"\bresidential\b[^\.\n]*?\b(?:exclusion|excluded|limitation)\b",
+    r"\b(?:exclusion|excluded)\b[^\.\n]*?\bresidential\b",
+    r"\bsubcontractor\b[^\.\n]*?\b(?:exclusion|warranty|limitation)\b",
+    r"\baction\s+over\b[^\.\n]*?\bexclusion\b",
+    r"\bcross\s+suits?\b[^\.\n]*?\bexclusion\b",
+    r"\bdesignated\s+(?:work|operations?)\b[^\.\n]*?\bexclusion\b",
+    r"\bheight\b[^\.\n]*?\b(?:limitation|exclusion)\b",
+    r"\broofing\b[^\.\n]*?\bexclusion\b",
+    r"\bprior\s+acts?\b[^\.\n]*?\bexclusion\b",
+    r"\bclassification\s+limitation\b",
+    r"\bcustom\s+exclusion\b",
+    r"\bnon-standard\s+limitation\b",
+    r"\bdoes\s+not\s+apply\s+to\s+(?:any\s+)?(?:claims?|work|operations?)\b",
+    r"\bamended\s+to\s+exclude\b",
+    r"\bsolely\s+to\s+the\s+extent\b",
+]
 
 
 class ExtractionPipelineResult:
@@ -515,6 +536,7 @@ class ExtractionPipelineService:
             coverages.append(cov)
 
         # Endorsements
+        full_doc_text = " ".join(p.text_content for p in pages_to_process)
         endorsements: List[EndorsementExtraction] = []
         for raw_end in raw_result.endorsements:
             norm_end_type = normalize_endorsement_type(raw_end.endorsement_type)
@@ -534,6 +556,44 @@ class ExtractionPipelineService:
             else:
                 status = ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT
 
+            # Deterministic page-text inspection for restrictive manuscript wording
+            manuscript_detected = raw_end.manuscript_clause_detected
+            manuscript_status = raw_end.manuscript_status
+            restriction_code = raw_end.restriction_reason_code
+            restriction_desc = raw_end.restriction_description
+            verification_basis = getattr(raw_end, "manuscript_verification_basis", None)
+
+            matched_restrictive = None
+            for pat in MANUSCRIPT_RESTRICTIVE_PATTERNS:
+                m = re.search(pat, full_doc_text, re.I)
+                if m:
+                    matched_restrictive = m.group(0)
+                    break
+
+            if matched_restrictive:
+                manuscript_detected = True
+                manuscript_status = "DETECTED"
+                restriction_code = restriction_code or "MANUSCRIPT_RESTRICTION_DETECTED"
+                restriction_desc = restriction_desc or f"Restrictive manuscript provision or exclusion detected: '{matched_restrictive}'"
+                verification_basis = "detected_restriction"
+
+            # Date evidence grounding verification
+            eff_val = self._build_date_value(raw_end.effective_date, raw_end.confidence)
+            if eff_val and raw_end.effective_date:
+                raw_digits = re.sub(r"\D", "", raw_end.effective_date)
+                doc_digits = re.sub(r"\D", "", full_doc_text)
+                if raw_digits and raw_digits not in doc_digits:
+                    # Date does not exist in source document text
+                    eff_val = None
+
+            exp_val = self._build_date_value(raw_end.expiration_date, raw_end.confidence)
+            if exp_val and raw_end.expiration_date:
+                raw_digits = re.sub(r"\D", "", raw_end.expiration_date)
+                doc_digits = re.sub(r"\D", "", full_doc_text)
+                if raw_digits and raw_digits not in doc_digits:
+                    # Date does not exist in source document text
+                    exp_val = None
+
             end = EndorsementExtraction(
                 endorsement_type=norm_end_type,
                 document_type=doc_type,
@@ -544,10 +604,13 @@ class ExtractionPipelineService:
                 is_blanket=raw_end.is_blanket,
                 is_coi_checkbox_only=raw_end.is_coi_checkbox_only,
                 is_standard_form=raw_end.is_standard_form,
-                manuscript_clause_detected=raw_end.manuscript_clause_detected,
-                manuscript_status=raw_end.manuscript_status,
-                restriction_description=raw_end.restriction_description,
-                restriction_reason_code=raw_end.restriction_reason_code,
+                manuscript_clause_detected=manuscript_detected,
+                manuscript_status=manuscript_status,
+                manuscript_verification_basis=verification_basis,
+                restriction_description=restriction_desc,
+                restriction_reason_code=restriction_code,
+                effective_date=eff_val.date if eff_val else None,
+                expiration_date=exp_val.date if exp_val else None,
                 evidence=ev,
                 extraction_status=status,
                 confidence=raw_end.confidence,
@@ -589,8 +652,9 @@ def reconcile_cross_document_set(doc_set: ExtractedDocumentSet) -> List[str]:
     1. Conflicting effective or expiration dates across coverages for the same coverage type.
     2. Conflicting limit amounts for equivalent coverage types and limit fields.
     3. Endorsement applicable_policy numbers that conflict with active coverage policy numbers.
-    4. Endorsement scheduled entities that conflict with the certificate holder or named insured.
-    5. Conflicting entity schedules across multiple endorsements of the same type.
+    4. Conflicting effective or expiration dates between coverages and endorsements for the same policy.
+    5. Conflicting dates across multiple endorsements for the same policy.
+    6. Conflicting entity schedules across multiple endorsements of the same endorsement type.
     
     Populates doc_set.raw_contradictions_detected and returns the updated list.
     """
@@ -645,29 +709,59 @@ def reconcile_cross_document_set(doc_set: ExtractedDocumentSet) -> List[str]:
                     f"which does not match known policy numbers {sorted(known_policy_numbers)}"
                 )
 
-    # 4. Endorsement scheduled entity vs Certificate Holder / Named Insured
-    cert_holder_norm = _normalize_entity_for_reconciliation(doc_set.certificate_holder.name) if (doc_set.certificate_holder and doc_set.certificate_holder.name) else ""
-    named_insured_norm = _normalize_entity_for_reconciliation(doc_set.named_insured.name) if (doc_set.named_insured and doc_set.named_insured.name) else ""
-
+    # 4. Cross-document date reconciliation between coverages and endorsements (Work Package C)
     for end in doc_set.endorsements:
-        if end.named_entities and not end.is_blanket:
-            if cert_holder_norm:
-                matched_any = False
-                for ent in end.named_entities:
-                    ent_norm = _normalize_entity_for_reconciliation(ent)
-                    if ent_norm and (ent_norm == cert_holder_norm or ent_norm in cert_holder_norm or cert_holder_norm in ent_norm):
-                        matched_any = True
-                        break
-                    if ent_norm and (ent_norm == named_insured_norm or ent_norm in named_insured_norm or named_insured_norm in ent_norm):
-                        matched_any = True
-                        break
-                if not matched_any:
+        matching_covs = []
+        if end.applicable_policy and end.applicable_policy.strip():
+            end_pol = end.applicable_policy.strip().upper()
+            matching_covs = [
+                c for c in doc_set.coverages
+                if c.policy_number and c.policy_number.strip().upper() == end_pol
+            ]
+        elif end.endorsement_type == EndorsementType.ADDITIONAL_INSURED:
+            # Default linkage to general liability if policy number is omitted
+            matching_covs = [
+                c for c in doc_set.coverages
+                if c.coverage_type == CoverageType.GENERAL_LIABILITY
+            ]
+
+        for cov in matching_covs:
+            if end.effective_date and cov.effective_date and cov.effective_date.date:
+                if end.effective_date != cov.effective_date.date:
                     new_contradictions.append(
-                        f"CONTRADICTORY_ENDORSEMENTS_FOUND: Endorsement schedules {end.named_entities} "
-                        f"which conflicts with certificate holder '{doc_set.certificate_holder.name}'"
+                        f"CONTRADICTORY_POLICY_DATES_DETECTED: Conflicting effective dates between coverage {cov.coverage_type.value} "
+                        f"({cov.effective_date.date.isoformat()}) and endorsement ({end.effective_date.isoformat()})"
+                    )
+            if end.expiration_date and cov.expiration_date and cov.expiration_date.date:
+                if end.expiration_date != cov.expiration_date.date:
+                    new_contradictions.append(
+                        f"CONTRADICTORY_POLICY_DATES_DETECTED: Conflicting expiration dates between coverage {cov.coverage_type.value} "
+                        f"({cov.expiration_date.date.isoformat()}) and endorsement ({end.expiration_date.isoformat()})"
                     )
 
-    # 5. Conflicting entity schedules across multiple endorsements
+    # 5. Cross-endorsement date reconciliation
+    ends_by_policy: dict = {}
+    for end in doc_set.endorsements:
+        pol_key = end.applicable_policy.strip().upper() if (end.applicable_policy and end.applicable_policy.strip()) else f"TYPE_{end.endorsement_type.value}"
+        ends_by_policy.setdefault(pol_key, []).append(end)
+
+    for pol_key, elist in ends_by_policy.items():
+        if len(elist) > 1:
+            eff_dates = {e.effective_date for e in elist if e.effective_date}
+            if len(eff_dates) > 1:
+                new_contradictions.append(
+                    f"CONTRADICTORY_POLICY_DATES_DETECTED: Conflicting effective dates across endorsements for '{pol_key}': "
+                    f"{[d.isoformat() for d in sorted(eff_dates)]}"
+                )
+            exp_dates = {e.expiration_date for e in elist if e.expiration_date}
+            if len(exp_dates) > 1:
+                new_contradictions.append(
+                    f"CONTRADICTORY_POLICY_DATES_DETECTED: Conflicting expiration dates across endorsements for '{pol_key}': "
+                    f"{[d.isoformat() for d in sorted(exp_dates)]}"
+                )
+
+    # 6. Conflicting entity schedules across multiple endorsements of the same type (Work Package D)
+    # Note: Legitimate third-party scheduled entities are preserved as facts without unconditional contradiction
     ends_by_type: dict = {}
     for end in doc_set.endorsements:
         ends_by_type.setdefault(end.endorsement_type, []).append(end)

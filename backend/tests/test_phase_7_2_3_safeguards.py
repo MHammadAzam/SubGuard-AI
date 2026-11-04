@@ -1,10 +1,11 @@
-"""Phase 7.2.3 Compliance Safeguards and Regression Tests.
+"""Phase 7.2.3 and 7.2.3.2 Compliance Safeguards and Regression Tests.
 
-Tests the four key work packages implemented in Phase 7.2.3:
+Comprehensive test suite covering:
 - WP-A: Defensive active-term enforcement & future effective date protection.
-- WP-B: Manuscript endorsement & restrictive wording detection.
-- WP-C: Deterministic cross-document reconciliation engine.
+- WP-B: Manuscript endorsement & restrictive wording detection, conservative defaults.
+- WP-C: Deterministic cross-document reconciliation engine (limits, dates, policies).
 - WP-D: Target scenario regression tests (SCEN-16, SCEN-24, SCEN-27, SCEN-36).
+- Complete 18-category compliance test matrix with explicit status and reason code assertions.
 """
 
 from datetime import date
@@ -17,6 +18,7 @@ from app.extraction.pipeline import (
 )
 from app.extraction.providers.mock import MockExtractionProvider
 from app.schemas.insurance import (
+    ComplianceFinding,
     ComplianceStatus,
     CoverageExtraction,
     CoverageType,
@@ -82,7 +84,6 @@ class TestPhase723WorkPackageA(unittest.TestCase):
 
     def test_future_effective_date_prevents_compliant_status_defensively(self):
         """A policy with a future effective date must NEVER produce COMPLIANT,
-
         even if the requirement profile completely omits POLICY_EFFECTIVE_DATE.
         """
         review_date = date(2025, 6, 1)
@@ -251,32 +252,27 @@ class TestPhase723WorkPackageC(unittest.TestCase):
         result = evaluator.evaluate(doc_set, [sample_gl_requirement()], EVAL_DATE)
         self.assertEqual(result.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
 
-    def test_cross_document_scheduled_entity_contradiction(self):
-        """Contradiction between COI cert holder / named insured and Endorsement schedule must escalate."""
-        cov = sample_gl_coverage()
+    def test_cross_document_coverage_vs_endorsement_date_contradiction(self):
+        """Conflicting effective dates between coverage and endorsement must be detected."""
+        cov = sample_gl_coverage(eff=date(2025, 1, 1), exp=date(2026, 1, 1))
         end = EndorsementExtraction(
             endorsement_type=EndorsementType.ADDITIONAL_INSURED,
-            form_number="CG 20 10",
-            named_entities=["Contradictory Party Inc"],
+            form_number="CG 20 10 04 13",
+            applicable_policy=cov.policy_number,
+            effective_date=date(2025, 7, 1),  # Conflicting effective date
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
             confidence=0.95,
             extraction_status=ExtractionStatus.EXTRACTED,
-            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Contradictory Party Inc"),
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
         )
-
-        doc_set = sample_subcontractor_document_set(
-            named_insured_name="Apex Electrical Contractors LLC",
-            gl_coverage=cov,
-            endorsements=[end],
-        )
-        doc_set.certificate_holder = EntityInfo(
-            name="General Contractor Corp",
-            confidence=0.95,
-            evidence=make_evidence(text="General Contractor Corp"),
-        )
-
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov, endorsements=[end])
         reconcile_cross_document_set(doc_set)
+
         self.assertTrue(len(doc_set.raw_contradictions_detected) > 0)
-        self.assertTrue(any("conflicts with certificate holder" in c for c in doc_set.raw_contradictions_detected))
+        self.assertTrue(any("CONTRADICTORY_POLICY_DATES_DETECTED" in c for c in doc_set.raw_contradictions_detected))
 
         evaluator = ComplianceEvaluator()
         result = evaluator.evaluate(doc_set, [sample_gl_requirement()], EVAL_DATE)
@@ -365,16 +361,23 @@ class TestPhase723WorkPackageD(unittest.TestCase):
         res = self.evaluator.evaluate(doc_set, reqs, evaluation_date=EVAL_DATE)
         self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
 
-    def test_scen_36_contradictory_schedule_routes_to_human_review(self):
-        """SCEN-36: Endorsement scheduling a contradictory party routes to human review."""
-        cov = sample_gl_coverage()
+    def test_scen_36_actual_date_contradiction_routes_to_human_review(self):
+        """SCEN-36: Contradictory policy effective dates between documents routes to human review."""
+        cov = sample_gl_coverage(eff=date(2025, 1, 1), exp=date(2026, 1, 1))
+        cov.policy_number = "GL-98765432"
         end = EndorsementExtraction(
             endorsement_type=EndorsementType.ADDITIONAL_INSURED,
-            form_number="CG 20 10",
+            form_number="CG 20 10 04 13",
+            applicable_policy="GL-98765432",
+            effective_date=date(2025, 7, 1),  # Mismatch with coverage 01/01/2025
             named_entities=["Contradictory Party Inc"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
             confidence=0.95,
             extraction_status=ExtractionStatus.EXTRACTED,
-            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Contradictory Party Inc"),
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
         )
         doc_set = sample_subcontractor_document_set(gl_coverage=cov, endorsements=[end])
         doc_set.certificate_holder = EntityInfo(
@@ -383,6 +386,8 @@ class TestPhase723WorkPackageD(unittest.TestCase):
             evidence=make_evidence(text="General Contractor Corp"),
         )
         reconcile_cross_document_set(doc_set)
+
+        self.assertTrue(any("CONTRADICTORY_POLICY_DATES_DETECTED" in c for c in doc_set.raw_contradictions_detected))
 
         reqs = [
             InsuranceRequirement(
@@ -395,6 +400,813 @@ class TestPhase723WorkPackageD(unittest.TestCase):
         ]
         res = self.evaluator.evaluate(doc_set, reqs, evaluation_date=EVAL_DATE)
         self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+
+
+# ============================================================================
+# Full 18-Category Compliance Coverage Suite (Work Package E)
+# ============================================================================
+
+class TestEighteenComplianceCategories(unittest.TestCase):
+    """Complete 18-category test matrix mandated by Phase 7.2.3.2."""
+
+    def setUp(self):
+        self.evaluator = ComplianceEvaluator()
+        self.eval_date = date(2025, 6, 1)
+
+    # -------------------------------------------------------------------------
+    # Category 1: Missing effective date
+    # -------------------------------------------------------------------------
+    def test_cat01_missing_effective_date(self):
+        """Cat 1: Omitted effective date produces MISSING_EVIDENCE and EFFECTIVE_DATE_MISSING."""
+        cov = sample_gl_coverage()
+        cov.effective_date = None
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov)
+
+        req = InsuranceRequirement(
+            requirement_id="REQ_EFF",
+            description="Test requirement",
+            rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.MISSING_EVIDENCE)
+        self.assertEqual(finding.reason_code, "EFFECTIVE_DATE_MISSING")
+        self.assertTrue(finding.requires_human_review)
+
+    # -------------------------------------------------------------------------
+    # Category 2: Future effective date
+    # -------------------------------------------------------------------------
+    def test_cat02_future_effective_date(self):
+        """Cat 2: Future effective date produces NON_COMPLIANT with POLICY_FUTURE_INCEPTION."""
+        future_date = date(2025, 9, 1)  # After eval_date 2025-06-01
+        cov = sample_gl_coverage(eff=future_date, exp=date(2026, 9, 1))
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov)
+
+        req = InsuranceRequirement(
+            requirement_id="REQ_EFF",
+            description="Test requirement",
+            rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.NON_COMPLIANT)
+        self.assertEqual(finding.reason_code, "POLICY_FUTURE_INCEPTION")
+        self.assertTrue(finding.requires_human_review)
+
+    # -------------------------------------------------------------------------
+    # Category 3: Low-confidence effective date
+    # -------------------------------------------------------------------------
+    def test_cat03_low_confidence_effective_date(self):
+        """Cat 3: Effective date confidence < 0.70 produces UNABLE_TO_DETERMINE."""
+        cov = sample_gl_coverage(eff=date(2025, 1, 1), exp=date(2026, 1, 1))
+        cov.effective_date.confidence = 0.55
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov)
+
+        req = InsuranceRequirement(
+            requirement_id="REQ_EFF",
+            description="Test requirement",
+            rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.UNABLE_TO_DETERMINE)
+        self.assertEqual(finding.reason_code, "EFFECTIVE_DATE_CONFIDENCE_LOW")
+        self.assertTrue(finding.requires_human_review)
+
+    # -------------------------------------------------------------------------
+    # Category 4: Unsupported date evidence
+    # -------------------------------------------------------------------------
+    def test_cat04_unsupported_date_evidence(self):
+        """Cat 4: QUOTE_PRESENT_UNVERIFIED_SUPPORT on effective date routes to human review."""
+        cov = sample_gl_coverage()
+        cov.extraction_status = ExtractionStatus.QUOTE_PRESENT_UNVERIFIED_SUPPORT
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov)
+
+        req = InsuranceRequirement(
+            requirement_id="REQ_EFF",
+            description="Test requirement",
+            rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "EFFECTIVE_DATE_EVIDENCE_SUPPORT_UNVERIFIED")
+        self.assertTrue(finding.requires_human_review)
+
+    # -------------------------------------------------------------------------
+    # Category 5: Conflicting dates across documents
+    # -------------------------------------------------------------------------
+    def test_cat05_conflicting_dates_across_documents(self):
+        """Cat 5: Effective date mismatch between COI and endorsement raises CONTRADICTORY_POLICY_DATES_DETECTED."""
+        cov = sample_gl_coverage(eff=date(2025, 1, 1), exp=date(2026, 1, 1))
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            applicable_policy=cov.policy_number,
+            effective_date=date(2025, 6, 15),  # Contradicts 2025-01-01
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov, endorsements=[end])
+        reconcile_cross_document_set(doc_set)
+
+        self.assertTrue(any("CONTRADICTORY_POLICY_DATES_DETECTED" in c for c in doc_set.raw_contradictions_detected))
+        res = self.evaluator.evaluate(doc_set, [sample_gl_requirement()], self.eval_date)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+
+    # -------------------------------------------------------------------------
+    # Category 6: Equivalent dates represented differently
+    # -------------------------------------------------------------------------
+    def test_cat06_equivalent_dates_represented_differently(self):
+        """Cat 6: Semantically equal dates represented with different raw text resolve as valid without contradiction."""
+        cov = sample_gl_coverage(eff=date(2025, 1, 1), exp=date(2026, 1, 1))
+        cov.effective_date.raw_text = "01/01/2025"
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            applicable_policy=cov.policy_number,
+            effective_date=date(2025, 1, 1),  # Same date
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov, endorsements=[end])
+        reconcile_cross_document_set(doc_set)
+
+        # No contradiction detected
+        self.assertEqual(len(doc_set.raw_contradictions_detected), 0)
+
+        req = InsuranceRequirement(
+            requirement_id="REQ_EFF",
+            description="Test requirement",
+            rule_type=RequirementType.POLICY_EFFECTIVE_DATE,
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.COMPLIANT)
+        self.assertEqual(finding.reason_code, "EFFECTIVE_DATE_VALID")
+
+    # -------------------------------------------------------------------------
+    # Category 7: Missing endorsement classification
+    # -------------------------------------------------------------------------
+    def test_cat07_missing_endorsement_classification(self):
+        """Cat 7: Completely missing classification fields cannot silently pass; routes to human review."""
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            is_standard_form=None,
+            manuscript_clause_detected=None,
+            manuscript_status=None,
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[end])
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Test requirement",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "ENDORSEMENT_FORM_UNCERTAIN")
+        self.assertTrue(finding.requires_human_review)
+
+    # -------------------------------------------------------------------------
+    # Category 8: Unknown standard-form status
+    # -------------------------------------------------------------------------
+    def test_cat08_unknown_standard_form_status(self):
+        """Cat 8: is_standard_form=None routes to human review with ENDORSEMENT_FORM_UNCERTAIN."""
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            is_standard_form=None,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[end])
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Test requirement",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "ENDORSEMENT_FORM_UNCERTAIN")
+
+    # -------------------------------------------------------------------------
+    # Category 9: Unknown manuscript status
+    # -------------------------------------------------------------------------
+    def test_cat09_unknown_manuscript_status(self):
+        """Cat 9: manuscript_status='UNCERTAIN' routes to human review."""
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            is_standard_form=True,
+            manuscript_clause_detected=None,
+            manuscript_status="UNCERTAIN",
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[end])
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Test requirement",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "ENDORSEMENT_FORM_UNCERTAIN")
+
+    # -------------------------------------------------------------------------
+    # Category 10: Explicit manuscript restrictions
+    # -------------------------------------------------------------------------
+    def test_cat10_explicit_manuscript_restrictions(self):
+        """Cat 10: Detected manuscript clause routes to human review with specific restriction code."""
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            is_standard_form=True,
+            manuscript_clause_detected=True,
+            manuscript_status="DETECTED",
+            restriction_reason_code="MANUSCRIPT_RESTRICTION_DETECTED",
+            restriction_description="Custom residential exclusion clause added",
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Custom residential exclusion"),
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[end])
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Test requirement",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_RESTRICTION_DETECTED")
+        self.assertTrue(finding.requires_human_review)
+
+    # -------------------------------------------------------------------------
+    # Category 11: Non-standard endorsement
+    # -------------------------------------------------------------------------
+    def test_cat11_non_standard_endorsement(self):
+        """Cat 11: Proprietary non-standard form (is_standard_form=False) routes to human review."""
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="PROPRIETARY-FORM-99",
+            is_standard_form=False,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Proprietary endorsement form"),
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[end])
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Test requirement",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "NON_STANDARD_ENDORSEMENT_FORM")
+
+    # -------------------------------------------------------------------------
+    # Category 12: Low-confidence endorsement extraction
+    # -------------------------------------------------------------------------
+    def test_cat12_low_confidence_endorsement_extraction(self):
+        """Cat 12: Endorsement confidence < 0.70 produces UNABLE_TO_DETERMINE."""
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            confidence=0.55,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[end])
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Test requirement",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.UNABLE_TO_DETERMINE)
+        self.assertEqual(finding.reason_code, "ENDORSEMENT_CONFIDENCE_LOW")
+        self.assertTrue(finding.requires_human_review)
+
+    # -------------------------------------------------------------------------
+    # Category 13: Missing endorsement evidence
+    # -------------------------------------------------------------------------
+    def test_cat13_missing_endorsement_evidence(self):
+        """Cat 13: Mandatory evidence required but endorsement has no evidence -> MISSING_EVIDENCE."""
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            confidence=0.95,
+            evidence=None,  # No evidence text
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[end])
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Test requirement",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            mandatory_evidence=True,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.MISSING_EVIDENCE)
+        self.assertEqual(finding.reason_code, "ENDORSEMENT_EVIDENCE_TEXT_MISSING")
+
+    # -------------------------------------------------------------------------
+    # Category 14: Equivalent coverage limits
+    # -------------------------------------------------------------------------
+    def test_cat14_equivalent_coverage_limits(self):
+        """Cat 14: Matching coverage limits across multiple documents generate no contradictions."""
+        cov1 = sample_gl_coverage(occ_cents=100_000_000, agg_cents=200_000_000)
+        cov2 = sample_gl_coverage(occ_cents=100_000_000, agg_cents=200_000_000)
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov1)
+        doc_set.coverages.append(cov2)
+
+        reconcile_cross_document_set(doc_set)
+        limit_contradictions = [c for c in doc_set.raw_contradictions_detected if "LIMITS" in c]
+        self.assertEqual(len(limit_contradictions), 0)
+
+    # -------------------------------------------------------------------------
+    # Category 15: Contradictory coverage limits
+    # -------------------------------------------------------------------------
+    def test_cat15_contradictory_coverage_limits(self):
+        """Cat 15: Mismatched coverage limits across documents flag CONTRADICTORY_POLICY_LIMITS_DETECTED."""
+        cov1 = sample_gl_coverage(occ_cents=100_000_000)
+        cov2 = sample_gl_coverage(occ_cents=50_000_000)  # Contradicts $1M
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov1)
+        doc_set.coverages.append(cov2)
+
+        reconcile_cross_document_set(doc_set)
+        self.assertTrue(any("CONTRADICTORY_POLICY_LIMITS_DETECTED" in c for c in doc_set.raw_contradictions_detected))
+
+    # -------------------------------------------------------------------------
+    # Category 16: Named insured versus certificate holder distinction
+    # -------------------------------------------------------------------------
+    def test_cat16_named_insured_vs_cert_holder_distinction(self):
+        """Cat 16: System cleanly distinguishes Named Insured from Certificate Holder roles."""
+        cov = sample_gl_coverage()
+        doc_set = sample_subcontractor_document_set(
+            named_insured_name="Apex Electrical Contractors LLC",
+            gl_coverage=cov,
+        )
+        doc_set.certificate_holder = EntityInfo(
+            name="General Contractor Corp",
+            confidence=0.98,
+            evidence=make_evidence(text="CERTIFICATE HOLDER: General Contractor Corp"),
+        )
+
+        req_ni = InsuranceRequirement(
+            requirement_id="REQ_NI",
+            description="Test requirement",
+            rule_type=RequirementType.NAMED_INSURED,
+            required_entity_name="Apex Electrical Contractors LLC",
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req_ni], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.COMPLIANT)
+        self.assertEqual(finding.reason_code, "NAMED_INSURED_EXACT_MATCH")
+        self.assertEqual(finding.found_value["extracted_name"], "Apex Electrical Contractors LLC")
+
+    # -------------------------------------------------------------------------
+    # Category 17: Scheduled-entity reconciliation
+    # -------------------------------------------------------------------------
+    def test_cat17_scheduled_entity_reconciliation(self):
+        """Cat 17: Third-party scheduled entity does not falsely flag contradiction; contract requirement is enforced."""
+        cov = sample_gl_coverage()
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            named_entities=["Project Owner Municipal Authority"],  # Legitimate 3rd party
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Project Owner Municipal Authority"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov, endorsements=[end])
+        doc_set.certificate_holder = EntityInfo(
+            name="General Contractor Corp",
+            confidence=0.95,
+            evidence=make_evidence(text="General Contractor Corp"),
+        )
+
+        # 1. Reconciliation does not unconditionally flag third-party as contradiction
+        reconcile_cross_document_set(doc_set)
+        sched_contradictions = [c for c in doc_set.raw_contradictions_detected if "conflicts with certificate holder" in c]
+        self.assertEqual(len(sched_contradictions), 0)
+
+        # 2. General endorsement presence passes without false escalation
+        req_general = InsuranceRequirement(
+            requirement_id="REQ_AI_GENERAL",
+            description="Test requirement",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            severity=Severity.CRITICAL,
+        )
+        res_general = self.evaluator.evaluate(doc_set, [req_general], self.eval_date)
+        self.assertEqual(res_general.findings[0].status, ComplianceStatus.COMPLIANT)
+
+        # 3. Contract-specific required entity on endorsement is enforced
+        req_specific = InsuranceRequirement(
+            requirement_id="REQ_AI_SPECIFIC",
+            description="Test requirement",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_entity_name="General Contractor Corp",  # Explicitly requires GC scheduled
+            severity=Severity.CRITICAL,
+        )
+        res_specific = self.evaluator.evaluate(doc_set, [req_specific], self.eval_date)
+        self.assertEqual(res_specific.findings[0].status, ComplianceStatus.NON_COMPLIANT)
+        self.assertEqual(res_specific.findings[0].reason_code, "ENDORSEMENT_ENTITY_MISMATCH")
+
+    # -------------------------------------------------------------------------
+    # Category 18: Multiple endorsements with conflicting policy references
+    # -------------------------------------------------------------------------
+    def test_cat18_multiple_endorsements_conflicting_policies(self):
+        """Cat 18: Endorsements for same requirement pointing to conflicting policies flag CONTRADICTORY_ENDORSEMENTS_FOUND."""
+        end1 = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            applicable_policy="GL-11111111",
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured Policy 1"),
+        )
+        end2 = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10",
+            applicable_policy="GL-22222222",  # Different policy
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured Policy 2"),
+        )
+        doc_set = sample_subcontractor_document_set(endorsements=[end1, end2])
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Test requirement",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            severity=Severity.CRITICAL,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "CONTRADICTORY_ENDORSEMENTS_FOUND")
+
+
+
+class Phase7234RemediationTests(unittest.TestCase):
+    """Specific regression and validation tests for Phase 7.2.3.4 remediations.
+    
+    Covers:
+    - Remediation A: Negative manuscript verification basis and standard form provenance.
+    - Remediation A: Full-document text scanning for restrictive manuscript clauses.
+    - Remediation B: Physical PDF date grounding and generic extraction for SCEN-36.
+    """
+
+    def setUp(self):
+        self.evaluator = ComplianceEvaluator()
+        self.eval_date = date(2025, 6, 1)
+
+    def test_manuscript_not_detected_without_basis_routes_to_human_review(self):
+        """Endorsement claiming NOT_DETECTED without defensible verification basis routes to human review."""
+        cov = sample_gl_coverage()
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis=None,  # Missing basis
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="CG 20 10 04 13"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov, endorsements=[end])
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Additional Insured required",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_VERIFICATION_UNSUPPORTED")
+
+    def test_manuscript_not_detected_with_non_standard_form_routes_to_human_review(self):
+        """Endorsement claiming NOT_DETECTED with non-standard form number routes to human review."""
+        cov = sample_gl_coverage()
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CUSTOM-MOD-999",  # Non-standard form claimed as standard
+            named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="CUSTOM-MOD-999"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov, endorsements=[end])
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Additional Insured required",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_VERIFICATION_UNSUPPORTED")
+
+    def test_manuscript_explicit_restriction_in_text(self):
+        """Full-document text scanning detects restrictive wording and overrides falsely claimed NOT_DETECTED."""
+        inspection = PDFDocumentInspection(
+            document_id="TEST-DOC-MANUSCRIPT-01",
+            filename="endorsement.pdf",
+            file_size_bytes=1000,
+            content_hash_sha256="abc1",
+            classified_type=DocumentType.ENDORSEMENT,
+            classification_confidence=0.95,
+            classification_reason="test",
+            page_count=1,
+            processing_status=DocumentProcessingStatus.PROCESSED,
+            pages=[
+                PDFPageInspection(
+                    page_number=1,
+                    text_content="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13. Subject to residential work exclusion endorsement.",
+                    width_pts=612.0,
+                    height_pts=792.0,
+                    content_hash_sha256="abc",
+                )
+            ],
+        )
+        raw_extraction = RawInsuranceExtraction(
+            document_type="endorsement",
+            endorsements=[
+                RawEndorsement(
+                    endorsement_type="additional_insured",
+                    form_number="CG 20 10 04 13",
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,  # Provider falsely claimed False
+                    manuscript_status="NOT_DETECTED",  # Provider falsely claimed NOT_DETECTED
+                    manuscript_verification_basis="unmodified_standard_form",
+                    confidence=0.95,
+                    evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13",
+                    ),
+                )
+            ],
+            is_document_set_complete=True,
+        )
+        pipeline = ExtractionPipelineService(
+            extraction_provider=MockExtractionProvider(canned_response=raw_extraction)
+        )
+        result = pipeline.process_inspection(inspection, subcontractor_id="SUB-MANUSCRIPT-01")
+        doc_set = result.document_set
+        self.assertIsNotNone(doc_set)
+        self.assertEqual(len(doc_set.endorsements), 1)
+        end = doc_set.endorsements[0]
+        self.assertTrue(end.manuscript_clause_detected)
+        self.assertEqual(end.manuscript_status, "DETECTED")
+        self.assertEqual(end.restriction_reason_code, "MANUSCRIPT_RESTRICTION_DETECTED")
+
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Additional Insured required",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+        )
+        eval_res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = eval_res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_RESTRICTION_DETECTED")
+
+    def test_manuscript_restriction_outside_quote(self):
+        """Pipeline catches restrictive manuscript clause occurring on a different page outside the AI quote."""
+        inspection = PDFDocumentInspection(
+            document_id="TEST-DOC-MANUSCRIPT-02",
+            filename="endorsement_multipage.pdf",
+            file_size_bytes=2000,
+            content_hash_sha256="abc2",
+            classified_type=DocumentType.ENDORSEMENT,
+            classification_confidence=0.95,
+            classification_reason="test",
+            page_count=2,
+            processing_status=DocumentProcessingStatus.PROCESSED,
+            pages=[
+                PDFPageInspection(
+                    page_number=1,
+                    text_content="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13. ADDITIONAL INSURED - OWNERS, LESSEES OR CONTRACTORS.",
+                    width_pts=612.0,
+                    height_pts=792.0,
+                    content_hash_sha256="abc1",
+                ),
+                PDFPageInspection(
+                    page_number=2,
+                    text_content="ENDORSEMENT SCHEDULE: This coverage does not apply to any designated ongoing operations or subcontractor exclusion clause.",
+                    width_pts=612.0,
+                    height_pts=792.0,
+                    content_hash_sha256="abc2",
+                ),
+            ],
+        )
+        raw_extraction = RawInsuranceExtraction(
+            document_type="endorsement",
+            endorsements=[
+                RawEndorsement(
+                    endorsement_type="additional_insured",
+                    form_number="CG 20 10 04 13",
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,
+                    manuscript_status="NOT_DETECTED",
+                    manuscript_verification_basis="unmodified_standard_form",
+                    confidence=0.95,
+                    evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13",
+                    ),
+                )
+            ],
+            is_document_set_complete=True,
+        )
+        pipeline = ExtractionPipelineService(
+            extraction_provider=MockExtractionProvider(canned_response=raw_extraction)
+        )
+        result = pipeline.process_inspection(inspection, subcontractor_id="SUB-MANUSCRIPT-02")
+        end = result.document_set.endorsements[0]
+        self.assertTrue(end.manuscript_clause_detected)
+        self.assertEqual(end.manuscript_status, "DETECTED")
+        self.assertEqual(end.restriction_reason_code, "MANUSCRIPT_RESTRICTION_DETECTED")
+
+    def test_scen_36_date_present_in_pdf_and_detected(self):
+        """SCEN-36 contradictory date is physically on the PDF and triggers cross-document contradiction."""
+        import os
+        from app.documents.processor import PDFProcessor
+        processor = PDFProcessor()
+        fixture_path = os.path.join(
+            os.path.dirname(__file__), "..", "evaluation", "cohorts", "fixtures", "SCEN-36", "SCEN-36_contradictory_doc.pdf"
+        )
+        with open(fixture_path, "rb") as f:
+            pdf_bytes = f.read()
+        inspection = processor.process_pdf(pdf_bytes, document_id="SCEN-36-DOC2")
+        self.assertIn("07/01/2025", inspection.pages[0].text_content)
+        self.assertIn("CG 20 10 04 13", inspection.pages[0].text_content)
+
+        # Build cross-doc scenario
+        cov = sample_gl_coverage()
+        cov.effective_date = DateValue(date=date(2025, 1, 1), raw_text="01/01/2025", confidence=0.95)
+        cov.expiration_date = DateValue(date=date(2026, 1, 1), raw_text="01/01/2026", confidence=0.95)
+        cov.policy_number = "GL-98765432"
+
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            applicable_policy="GL-98765432",
+            effective_date=date(2025, 7, 1),  # 07/01/2025 from PDF
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="EFFECTIVE DATE: 07/01/2025"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov, endorsements=[end])
+        reconcile_cross_document_set(doc_set)
+        self.assertTrue(any("CONTRADICTORY_POLICY_DATES_DETECTED" in c for c in doc_set.raw_contradictions_detected))
+
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Additional Insured required",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+
+    def test_scen_36_date_absent_prevents_date_contradiction(self):
+        """When date text is absent from document text, pipeline suppresses ungrounded AI date."""
+        inspection = PDFDocumentInspection(
+            document_id="TEST-UNGROUNDED-DATE-01",
+            filename="endorsement.pdf",
+            file_size_bytes=1000,
+            content_hash_sha256="abc1",
+            classified_type=DocumentType.ENDORSEMENT,
+            classification_confidence=0.95,
+            classification_reason="test",
+            page_count=1,
+            processing_status=DocumentProcessingStatus.PROCESSED,
+            pages=[
+                PDFPageInspection(
+                    page_number=1,
+                    text_content="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13. ADDITIONAL INSURED - OWNERS, LESSEES.",
+                    width_pts=612.0,
+                    height_pts=792.0,
+                    content_hash_sha256="abc1",
+                )
+            ],
+        )
+        raw_extraction = RawInsuranceExtraction(
+            document_type="endorsement",
+            endorsements=[
+                RawEndorsement(
+                    endorsement_type="additional_insured",
+                    form_number="CG 20 10 04 13",
+                    effective_date="07/01/2025",  # Hallucinated date digits not in document text
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,
+                    manuscript_status="NOT_DETECTED",
+                    manuscript_verification_basis="unmodified_standard_form",
+                    confidence=0.95,
+                    evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13",
+                    ),
+                )
+            ],
+            is_document_set_complete=True,
+        )
+        pipeline = ExtractionPipelineService(
+            extraction_provider=MockExtractionProvider(canned_response=raw_extraction)
+        )
+        result = pipeline.process_inspection(inspection, subcontractor_id="SUB-UNG-01")
+        end = result.document_set.endorsements[0]
+        # Since '07012025' does not appear in doc text, pipeline resets effective_date to None
+        self.assertIsNone(end.effective_date)
 
 
 if __name__ == "__main__":

@@ -90,6 +90,10 @@ class TestPipelineComplianceE2E(unittest.TestCase):
                 RawEndorsement(
                     endorsement_type="additional_insured",
                     form_number="CG 20 10 04 13",
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,
+                    manuscript_status="NOT_DETECTED",
+                    manuscript_verification_basis="unmodified_standard_form",
                     confidence=0.95,
                     evidence=RawEvidenceQuote(
                         page_number=2,
@@ -519,6 +523,10 @@ class TestPipelineComplianceE2E(unittest.TestCase):
                 RawEndorsement(
                     endorsement_type="additional_insured",
                     form_number="CG 20 10 04 13",
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,
+                    manuscript_status="NOT_DETECTED",
+                    manuscript_verification_basis="unmodified_standard_form",
                     confidence=0.95,  # High confidence (>= 0.70 threshold)
                     evidence=RawEvidenceQuote(
                         page_number=2,
@@ -566,6 +574,10 @@ class TestPipelineComplianceE2E(unittest.TestCase):
                 RawEndorsement(
                     endorsement_type="additional_insured",
                     form_number="CG 20 10 04 13",
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,
+                    manuscript_status="NOT_DETECTED",
+                    manuscript_verification_basis="unmodified_standard_form",
                     confidence=None,  # Omitted confidence
                     evidence=RawEvidenceQuote(
                         page_number=2,

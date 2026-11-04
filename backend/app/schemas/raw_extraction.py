@@ -66,9 +66,30 @@ class RawEndorsement(BaseModel):
     key_terms: List[str] = Field(default_factory=list)
     is_blanket: bool = False
     is_coi_checkbox_only: bool = False
-    is_standard_form: Optional[bool] = Field(default=True, description="True if standard ISO/industry form")
-    manuscript_clause_detected: Optional[bool] = Field(default=False, description="True if restrictive manuscript modifications detected")
-    manuscript_status: Optional[str] = Field(default=None, description="'DETECTED', 'NOT_DETECTED', or 'UNCERTAIN'")
+    is_standard_form: Optional[bool] = Field(
+        default=None,
+        description="True if standard ISO/industry form, False if non-standard or manuscript, None if unverified/unknown"
+    )
+    manuscript_clause_detected: Optional[bool] = Field(
+        default=None,
+        description="True if restrictive manuscript modifications detected, False if verified absent, None if unverified/unknown"
+    )
+    manuscript_status: Optional[str] = Field(
+        default=None,
+        description="'DETECTED', 'NOT_DETECTED', or 'UNCERTAIN'"
+    )
+    manuscript_verification_basis: Optional[str] = Field(
+        default=None,
+        description="Defensible verification basis for negative manuscript determination: e.g. 'unmodified_standard_form', 'full_text_inspection', or None if unverified"
+    )
+    effective_date: Optional[str] = Field(
+        default=None,
+        description="Endorsement effective date string if explicitly stated"
+    )
+    expiration_date: Optional[str] = Field(
+        default=None,
+        description="Endorsement expiration date string if explicitly stated"
+    )
     restriction_description: Optional[str] = Field(default=None, description="Description of detected manuscript restriction or exclusion")
     restriction_reason_code: Optional[str] = Field(default=None, description="Specific reason code if custom restriction detected")
     evidence: Optional[RawEvidenceQuote] = None

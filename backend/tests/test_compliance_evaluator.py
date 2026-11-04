@@ -348,6 +348,10 @@ class TestComplianceEvaluator(unittest.TestCase):
             document_type=DocumentType.ENDORSEMENT,
             form_number="CG 20 10 04 13",
             named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
             evidence=make_evidence(
                 doc_id="doc_endorsement_001",
                 doc_type=DocumentType.ENDORSEMENT,

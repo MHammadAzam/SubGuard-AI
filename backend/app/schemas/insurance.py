@@ -183,16 +183,28 @@ class EndorsementExtraction(BaseModel):
         description="True if indication came ONLY from a checked box on COI without separate endorsement text/wording"
     )
     is_standard_form: Optional[bool] = Field(
-        default=True,
-        description="True if standard ISO/industry form, False for non-standard/manuscript"
+        default=None,
+        description="True if standard ISO/industry form, False for non-standard/manuscript, None if unverified/unknown"
     )
     manuscript_clause_detected: Optional[bool] = Field(
-        default=False,
-        description="True if restrictive manuscript modifications or exclusionary conditions were detected"
+        default=None,
+        description="True if restrictive manuscript modifications or exclusionary conditions were detected, False if verified absent, None if unverified/unknown"
     )
     manuscript_status: Optional[str] = Field(
         default=None,
         description="'DETECTED', 'NOT_DETECTED', or 'UNCERTAIN'"
+    )
+    manuscript_verification_basis: Optional[str] = Field(
+        default=None,
+        description="Defensible verification basis for negative manuscript determination: e.g. 'unmodified_standard_form', 'full_text_inspection', or None if unverified"
+    )
+    effective_date: Optional[date] = Field(
+        default=None,
+        description="Endorsement effective date if explicitly stated"
+    )
+    expiration_date: Optional[date] = Field(
+        default=None,
+        description="Endorsement expiration date if explicitly stated"
     )
     restriction_description: Optional[str] = Field(
         default=None,

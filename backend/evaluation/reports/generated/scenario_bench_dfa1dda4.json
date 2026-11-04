@@ -1,0 +1,308 @@
+{
+  "benchmark_id": "scenario_bench_dfa1dda4",
+  "timestamp": "2026-11-04T14:25:07.343787+00:00",
+  "manifest_version": "cohort_v1.0.0",
+  "manifest_hash": "adf3195e1001c40fc647d6603cb48b757796d3085693c08542b6bfc983f86e12",
+  "provider_name": "mock",
+  "model_name": "ScenarioBenchmarkMockProvider",
+  "total_scenarios": 1,
+  "successful_scenarios": 1,
+  "failed_scenarios": 0,
+  "submission_metrics": {
+    "total_scenarios": 1,
+    "exact_status_matches": 1,
+    "overall_accuracy": 1.0,
+    "macro_f1": 1.0,
+    "weighted_f1": 1.0,
+    "confusion_matrix_4class": {
+      "compliant": {
+        "compliant": 1,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 0
+      },
+      "non_compliant": {
+        "compliant": 0,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 0
+      },
+      "requires_human_review": {
+        "compliant": 0,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 0
+      },
+      "unable_to_determine": {
+        "compliant": 0,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 0
+      }
+    },
+    "confusion_matrix_5class": {
+      "compliant": {
+        "compliant": 1,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 0,
+        "missing_evidence": 0
+      },
+      "non_compliant": {
+        "compliant": 0,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 0,
+        "missing_evidence": 0
+      },
+      "requires_human_review": {
+        "compliant": 0,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 0,
+        "missing_evidence": 0
+      },
+      "unable_to_determine": {
+        "compliant": 0,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 0,
+        "missing_evidence": 0
+      },
+      "missing_evidence": {
+        "compliant": 0,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 0,
+        "missing_evidence": 0
+      }
+    },
+    "class_metrics": {
+      "compliant": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1.0
+      },
+      "non_compliant": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "requires_human_review": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "unable_to_determine": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      }
+    }
+  },
+  "finding_metrics": {
+    "total_findings": 7,
+    "exact_status_matches": 7,
+    "reason_code_matches": 6,
+    "human_review_matches": 7,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1_score": 1.0,
+    "exact_status_accuracy": 1.0,
+    "reason_code_accuracy": 0.8571,
+    "human_review_accuracy": 1.0
+  },
+  "fcr_metric": {
+    "metric_name": "False Compliance Rate (FCR)",
+    "numerator": 0,
+    "denominator": 0,
+    "rate_percentage": null,
+    "rate_string": "N/A",
+    "affected_scenario_ids": [],
+    "incident_details": []
+  },
+  "ucr_metric": {
+    "metric_name": "Unsafe Compliance Rate (UCR)",
+    "numerator": 0,
+    "denominator": 0,
+    "rate_percentage": null,
+    "rate_string": "N/A",
+    "affected_scenario_ids": [],
+    "incident_details": []
+  },
+  "human_review_metrics": {
+    "uncertainty_recall": 1.0,
+    "human_review_precision": 1.0,
+    "unnecessary_review_rate": 0.0,
+    "missed_review_rate": 0.0,
+    "total_human_review_ground_truth": 0,
+    "escalated_to_human_review_count": 0,
+    "unnecessary_review_count": 0,
+    "missed_review_count": 0,
+    "unsafe_non_pass_rate": 1.0,
+    "unsafe_non_pass_count": 0,
+    "total_unsafe_ground_truth": 0,
+    "human_review_recall": 1.0,
+    "human_review_recall_count": 0,
+    "total_requires_human_review_gt": 0,
+    "unable_to_determine_recall": 1.0,
+    "unable_to_determine_recall_count": 0,
+    "total_unable_to_determine_gt": 0
+  },
+  "evidence_metrics": {
+    "total_evidence_claims": 7,
+    "exact_quotation_matches": 7,
+    "quotation_match_rate": 1.0,
+    "document_attribution_accuracy": 1.0,
+    "page_attribution_accuracy": 1.0,
+    "claim_to_evidence_support_rate": 1.0,
+    "unsupported_claim_rate": 0.0,
+    "missing_evidence_rate": 0.0,
+    "citation_completeness_rate": 1.0,
+    "text_present_claim_supported_count": 7,
+    "text_present_claim_unsupported_count": 0,
+    "text_absent_count": 0,
+    "wrong_page_count": 0,
+    "wrong_document_count": 0,
+    "conflicting_evidence_count": 0
+  },
+  "scenario_results": [
+    {
+      "scenario_id": "SCEN-01",
+      "title": "Standard Clean ACORD 25 with Attached CG 20 10 and CG 24 04",
+      "expected_status": "compliant",
+      "predicted_status": "compliant",
+      "status_matched": true,
+      "expected_requires_human_review": false,
+      "predicted_requires_human_review": false,
+      "human_review_matched": true,
+      "is_unsafe_pass": false,
+      "is_false_compliant": false,
+      "processing_status": "success",
+      "error_type": null,
+      "error_message": null,
+      "findings_results": [
+        {
+          "requirement_id": "REQ_GL_EACH_OCC",
+          "rule_type": "coverage_limit",
+          "expected_status": "compliant",
+          "predicted_status": "compliant",
+          "status_matched": true,
+          "expected_reason_code": "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
+          "predicted_reason_code": "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
+          "reason_code_matched": true,
+          "expected_human_review": false,
+          "predicted_human_review": false,
+          "human_review_matched": true,
+          "evidence_grounding_status": "supported",
+          "explanation": "general_liability each_occurrence of $1,000,000.00 meets or exceeds required minimum of $1,000,000.00."
+        },
+        {
+          "requirement_id": "REQ_GL_AGG",
+          "rule_type": "coverage_limit",
+          "expected_status": "compliant",
+          "predicted_status": "compliant",
+          "status_matched": true,
+          "expected_reason_code": "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
+          "predicted_reason_code": "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
+          "reason_code_matched": true,
+          "expected_human_review": false,
+          "predicted_human_review": false,
+          "human_review_matched": true,
+          "evidence_grounding_status": "supported",
+          "explanation": "general_liability general_aggregate of $2,000,000.00 meets or exceeds required minimum of $2,000,000.00."
+        },
+        {
+          "requirement_id": "REQ_AUTO_CSL",
+          "rule_type": "coverage_limit",
+          "expected_status": "compliant",
+          "predicted_status": "compliant",
+          "status_matched": true,
+          "expected_reason_code": "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
+          "predicted_reason_code": "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
+          "reason_code_matched": true,
+          "expected_human_review": false,
+          "predicted_human_review": false,
+          "human_review_matched": true,
+          "evidence_grounding_status": "supported",
+          "explanation": "auto_liability combined_single_limit of $1,000,000.00 meets or exceeds required minimum of $1,000,000.00."
+        },
+        {
+          "requirement_id": "REQ_WC_ACCIDENT",
+          "rule_type": "coverage_limit",
+          "expected_status": "compliant",
+          "predicted_status": "compliant",
+          "status_matched": true,
+          "expected_reason_code": "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
+          "predicted_reason_code": "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
+          "reason_code_matched": true,
+          "expected_human_review": false,
+          "predicted_human_review": false,
+          "human_review_matched": true,
+          "evidence_grounding_status": "supported",
+          "explanation": "workers_comp per_accident of $1,000,000.00 meets or exceeds required minimum of $1,000,000.00."
+        },
+        {
+          "requirement_id": "REQ_GL_EXPIRATION",
+          "rule_type": "policy_expiration",
+          "expected_status": "compliant",
+          "predicted_status": "compliant",
+          "status_matched": true,
+          "expected_reason_code": "POLICY_ACTIVE",
+          "predicted_reason_code": "POLICY_ACTIVE_AND_CURRENT",
+          "reason_code_matched": false,
+          "expected_human_review": false,
+          "predicted_human_review": false,
+          "human_review_matched": true,
+          "evidence_grounding_status": "supported",
+          "explanation": "general_liability policy is active through 2026-01-01 (current as of 2025-06-01)."
+        },
+        {
+          "requirement_id": "REQ_NAMED_INSURED",
+          "rule_type": "named_insured",
+          "expected_status": "compliant",
+          "predicted_status": "compliant",
+          "status_matched": true,
+          "expected_reason_code": "NAMED_INSURED_EXACT_MATCH",
+          "predicted_reason_code": "NAMED_INSURED_EXACT_MATCH",
+          "reason_code_matched": true,
+          "expected_human_review": false,
+          "predicted_human_review": false,
+          "human_review_matched": true,
+          "evidence_grounding_status": "supported",
+          "explanation": "Named insured 'Apex Electrical Contractors LLC' matches required entity 'Apex Electrical Contractors LLC'."
+        },
+        {
+          "requirement_id": "REQ_ADDITIONAL_INSURED",
+          "rule_type": "endorsement_presence",
+          "expected_status": "compliant",
+          "predicted_status": "compliant",
+          "status_matched": true,
+          "expected_reason_code": "ENDORSEMENT_VERIFIED",
+          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
+          "reason_code_matched": true,
+          "expected_human_review": false,
+          "predicted_human_review": false,
+          "human_review_matched": true,
+          "evidence_grounding_status": "supported",
+          "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
+        }
+      ],
+      "execution_time_seconds": 0.012
+    }
+  ],
+  "execution_failures": [],
+  "execution_time_seconds": 0.091,
+  "environment_metadata": {
+    "os": "Windows 11",
+    "python_version": "3.12.0",
+    "git_commit": "08d240dac80dd59a14ca8cb787f17fb3591d2d2d",
+    "git_branch": "main",
+    "pydantic_version": "2.14.2",
+    "pymupdf_version": "2.0"
+  }
+}

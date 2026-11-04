@@ -888,6 +888,16 @@ def create_scenario_spec(scenario_num: int) -> Dict[str, Any]:
                 (50, 70, f"POLICY NUMBER: {gl_policy}", 10),
                 (50, 100, "LIMITS OF INSURANCE: EACH OCCURRENCE: $2,000,000", 10),
             ]
+        elif scenario_num == 36:
+            # Conflicting effective date between COI (01/01/2025) and endorsement (07/01/2025)
+            doc2_lines = [
+                (50, 40, f"POLICY NUMBER: {gl_policy}", 10),
+                (50, 60, "COMMERCIAL GENERAL LIABILITY CG 20 10 04 13", 11),
+                (50, 80, "EFFECTIVE DATE: 07/01/2025", 10),
+                (50, 100, "THIS ENDORSEMENT CHANGES THE POLICY. PLEASE READ IT CAREFULLY.", 9),
+                (50, 120, "ADDITIONAL INSURED - SCHEDULED PERSON OR ORGANIZATION", 11),
+                (50, 150, "Schedule: General Contractor Corp", 10),
+            ]
         else:
             doc2_lines = [
                 (50, 40, f"POLICY NUMBER: {gl_policy}", 10),

@@ -268,6 +268,7 @@ class ScenarioBenchmarkMockProvider(BaseExtractionProvider):
                 RawEndorsement(
                     endorsement_type="additional_insured",
                     form_number="CG 20 10 04 13",
+                    is_standard_form=False,
                     manuscript_clause_detected=True,
                     manuscript_status="DETECTED",
                     restriction_reason_code="ENDORSEMENT_AGREEMENT_DATE_MISMATCH",
@@ -276,6 +277,44 @@ class ScenarioBenchmarkMockProvider(BaseExtractionProvider):
                     evidence=RawEvidenceQuote(
                         page_number=1,
                         source_text="ADDITIONAL INSURED - OWNERS, LESSEES OR CONTRACTORS",
+                        confidence=0.95,
+                    ),
+                    confidence=0.95,
+                )
+            )
+        elif "SCEN-37" in document_id and "DOC2" in document_id:
+            # Two conflicting CG 20 10 endorsements attached for the same policy with inconsistent schedules
+            raw_endorsements.append(
+                RawEndorsement(
+                    endorsement_type="additional_insured",
+                    form_number="CG 20 10 04 13",
+                    applicable_policy="GL-98765432",
+                    named_entities=["General Contractor Corp"],
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,
+                    manuscript_status="NOT_DETECTED",
+                    manuscript_verification_basis="unmodified_standard_form",
+                    evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="ADDITIONAL INSURED - SCHEDULED PERSON OR ORGANIZATION",
+                        confidence=0.95,
+                    ),
+                    confidence=0.95,
+                )
+            )
+            raw_endorsements.append(
+                RawEndorsement(
+                    endorsement_type="additional_insured",
+                    form_number="CG 20 10 04 13",
+                    applicable_policy="GL-98765432",
+                    named_entities=["Contradictory Party Inc"],
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,
+                    manuscript_status="NOT_DETECTED",
+                    manuscript_verification_basis="unmodified_standard_form",
+                    evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="Schedule: Contradictory Party Inc",
                         confidence=0.95,
                     ),
                     confidence=0.95,
@@ -337,6 +376,35 @@ class ScenarioBenchmarkMockProvider(BaseExtractionProvider):
 
             end_named_entities = []
             end_policy = None
+            end_eff_date = None
+            end_exp_date = None
+            date_quote = None
+
+            if is_coi:
+                # Do not loop through all policy numbers on COI; link to coverage referenced in remarks
+                c_text = full_text.lower()
+                if "general liability" in c_text or "cg 20" in c_text or "cg20" in c_text:
+                    end_policy = gl_pol
+                elif "automobile" in c_text or "auto" in c_text or "ca 20" in c_text:
+                    end_policy = al_pol
+                elif "workers comp" in c_text or "wc" in c_text:
+                    end_policy = wc_pol
+            else:
+                for line in full_text.split("\n"):
+                    if "POLICY NUMBER:" in line:
+                        m_pol = re.search(r"POLICY NUMBER:\s*([A-Za-z0-9\-]+)", line)
+                        if m_pol:
+                            end_policy = m_pol.group(1).strip()
+                    elif "EFFECTIVE DATE:" in line:
+                        m_eff = re.search(r"EFFECTIVE DATE:\s*([0-9]{2}/[0-9]{2}/[0-9]{4})", line)
+                        if m_eff:
+                            end_eff_date = m_eff.group(1).strip()
+                            date_quote = line.strip()
+                    elif "EXPIRATION DATE:" in line:
+                        m_exp = re.search(r"EXPIRATION DATE:\s*([0-9]{2}/[0-9]{2}/[0-9]{4})", line)
+                        if m_exp:
+                            end_exp_date = m_exp.group(1).strip()
+
             for line in full_text.split("\n"):
                 if "Schedule:" in line:
                     sched_val = line.replace("Schedule:", "").strip()
@@ -346,24 +414,28 @@ class ScenarioBenchmarkMockProvider(BaseExtractionProvider):
                     sched_val = line.replace("Name of Additional Insured:", "").strip()
                     if sched_val:
                         end_named_entities.append(sched_val)
-                elif "POLICY NUMBER:" in line:
-                    m_pol = re.search(r"POLICY NUMBER:\s*([A-Za-z0-9\-]+)", line)
-                    if m_pol:
-                        end_policy = m_pol.group(1).strip()
 
             if not end_named_entities and "General Contractor Corp" in full_text:
                 end_named_entities = ["General Contractor Corp"]
+
+            ev_quote = f"{date_quote}\n{end_quote}" if (date_quote and end_quote) else (end_quote or date_quote or "ADDITIONAL INSURED")
 
             raw_endorsements.append(
                 RawEndorsement(
                     endorsement_type="additional_insured",
                     form_number=form_no,
                     applicable_policy=end_policy,
+                    effective_date=end_eff_date,
+                    expiration_date=end_exp_date,
                     is_blanket=is_blanket,
                     named_entities=end_named_entities,
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,
+                    manuscript_status="NOT_DETECTED",
+                    manuscript_verification_basis="unmodified_standard_form",
                     evidence=RawEvidenceQuote(
                         page_number=end_page,
-                        source_text=end_quote or "ADDITIONAL INSURED",
+                        source_text=ev_quote,
                         confidence=0.95,
                     ),
                     confidence=0.95,
@@ -375,6 +447,9 @@ class ScenarioBenchmarkMockProvider(BaseExtractionProvider):
                 RawEndorsement(
                     endorsement_type="additional_insured",
                     is_coi_checkbox_only=True,
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,
+                    manuscript_status="NOT_DETECTED",
                     evidence=RawEvidenceQuote(
                         page_number=1,
                         source_text="ADDL INSD [X] WVD SUB [X] - General Contractor Corp is Additional Insured",

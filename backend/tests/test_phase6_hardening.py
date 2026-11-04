@@ -168,6 +168,10 @@ class TestPhase6Hardening(unittest.TestCase):
                     endorsement_type="additional_insured",
                     form_number="CG 20 10 04 13",
                     confidence=0.95,
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,
+                    manuscript_status="NOT_DETECTED",
+                    manuscript_verification_basis="unmodified_standard_form",
                     evidence=RawEvidenceQuote(
                         page_number=2,
                         source_text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13",
@@ -435,6 +439,10 @@ class TestPhase6Hardening(unittest.TestCase):
             endorsement_type=EndorsementType.ADDITIONAL_INSURED,
             form_number="CG 20 10",
             confidence=None,
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
             evidence=ev,
             extraction_status=ExtractionStatus.EXTRACTED,
         )

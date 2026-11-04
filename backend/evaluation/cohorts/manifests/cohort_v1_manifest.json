@@ -1,17 +1,17 @@
 {
   "manifest_version": "cohort_v1.0.0",
   "dataset_generation_seed": 20261103,
-  "generation_timestamp": "2026-11-03T18:14:43.425143+00:00",
+  "generation_timestamp": "2026-11-04T18:00:29.734383+00:00",
   "expected_scenario_count": 40,
   "annotations_file": "annotations/cohort_scenarios_v1.json",
-  "annotations_sha256": "bfae5122f41f25615ff2f077a43d0092c3dc5d5714fb58be0b8298db7d540cb3",
+  "annotations_sha256": "60f6ce98a4bd138480c460a6e79882d0365875949be9653c56e714b932a74bd9",
   "documents": [
     {
       "scenario_id": "SCEN-01",
       "document_id": "SCEN-01-DOC1",
       "filename": "SCEN-01_acord25.pdf",
       "relative_path": "fixtures/SCEN-01/SCEN-01_acord25.pdf",
-      "sha256": "426ba3254c0919c6fd8745039e1201b7265d0e0abc5fd9e0f832250ecfc6314c",
+      "sha256": "a30f962532b6b025fc11765249c47651e93a946002fa775fa7f74968ea08dd11",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -20,7 +20,7 @@
       "document_id": "SCEN-01-DOC2",
       "filename": "SCEN-01_endorsement_cg2010.pdf",
       "relative_path": "fixtures/SCEN-01/SCEN-01_endorsement_cg2010.pdf",
-      "sha256": "bf1ca959e6ab389520a0324804916ff6866af6ba5e1359e0e2db9d2b8559313b",
+      "sha256": "1a1a424ebe91e34c6afa0e76693faffdf605aae3b2a829ae4744d2ed85c09778",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -29,7 +29,7 @@
       "document_id": "SCEN-02-DOC1",
       "filename": "SCEN-02_acord25.pdf",
       "relative_path": "fixtures/SCEN-02/SCEN-02_acord25.pdf",
-      "sha256": "9eee32cf8a458a0f08adb8c7fcd9af8c086cbf9135e351d18dd30a33e9e60172",
+      "sha256": "513ffdd0b4c8116176ac80b1a052601f9cbbce52fe3486e317ae2a852d9620f7",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -38,7 +38,7 @@
       "document_id": "SCEN-02-DOC2",
       "filename": "SCEN-02_endorsement_cg2010.pdf",
       "relative_path": "fixtures/SCEN-02/SCEN-02_endorsement_cg2010.pdf",
-      "sha256": "ec9b8306248b1036ee0238e54c07c25ffd9f9fc998357046a58ef11cf003a2ec",
+      "sha256": "3296db27f0e849cee88d8ba497b01bfc1f07afa8da4a306232cdf14e7269be76",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -47,7 +47,7 @@
       "document_id": "SCEN-03-DOC1",
       "filename": "SCEN-03_acord25.pdf",
       "relative_path": "fixtures/SCEN-03/SCEN-03_acord25.pdf",
-      "sha256": "4265a233ff6be0576f28cb7f4e4e7c99eb787ec19a5ad15ef8d01d105936023a",
+      "sha256": "ae000f3ea485a2bbb49419f3adf14bdf4e15ebe007357e4b7627e7b20e51d670",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -56,7 +56,7 @@
       "document_id": "SCEN-03-DOC2",
       "filename": "SCEN-03_endorsement_cg2010.pdf",
       "relative_path": "fixtures/SCEN-03/SCEN-03_endorsement_cg2010.pdf",
-      "sha256": "5db939dc18abd71eb1913da4bf52d8140969c9f352bc8b14b50952e4c8d8f603",
+      "sha256": "53380efec46c9ed650772eb8edc6c0494aeb52387ccf6b093c4953b4bd5a647e",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -65,7 +65,7 @@
       "document_id": "SCEN-04-DOC1",
       "filename": "SCEN-04_acord25.pdf",
       "relative_path": "fixtures/SCEN-04/SCEN-04_acord25.pdf",
-      "sha256": "10a196e2dabb748c80bba27519e58f6ffcc87637454a63398e1c3ea50ee78926",
+      "sha256": "bc447d78493613e35cf779d132fcb7810cef3fde61a5ecef4753a788168ae7d3",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -74,7 +74,7 @@
       "document_id": "SCEN-04-DOC2",
       "filename": "SCEN-04_endorsement_cg2010.pdf",
       "relative_path": "fixtures/SCEN-04/SCEN-04_endorsement_cg2010.pdf",
-      "sha256": "dc3be278c943ed39ccd7780e0f7254cec49a8f0ac5ec955b9c39c68347eefc4c",
+      "sha256": "c4a9b517ba6679f2bc18ef0571c5f982d49bde9b2c6ba159d6da2bfaf82446eb",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -83,7 +83,7 @@
       "document_id": "SCEN-05-DOC1",
       "filename": "SCEN-05_acord25.pdf",
       "relative_path": "fixtures/SCEN-05/SCEN-05_acord25.pdf",
-      "sha256": "1f91fc8791995c0da0ccda28f5a1d2c6ee98a27ff598abf3ce6c526e4186c9aa",
+      "sha256": "69ac19b5b2cd399e185d92a1d0bbf1d99d4b56fb3b960b11659ddf4c7a77fd7a",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -92,7 +92,7 @@
       "document_id": "SCEN-05-DOC2",
       "filename": "SCEN-05_endorsement_cg2010.pdf",
       "relative_path": "fixtures/SCEN-05/SCEN-05_endorsement_cg2010.pdf",
-      "sha256": "038340af4f1c7bb6bf46830296bae86894b64de4009b6a30d087d3a614387a5a",
+      "sha256": "b372d8e101cbdc10bec2f51821c1afd9285fde9cc838cd2034913a05322f9f67",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -101,7 +101,7 @@
       "document_id": "SCEN-06-DOC1",
       "filename": "SCEN-06_acord25.pdf",
       "relative_path": "fixtures/SCEN-06/SCEN-06_acord25.pdf",
-      "sha256": "162bff4d2fcd8b0e17b8606d37ee0e0cd1ca205a6e9715fe4e151bcba0b7c113",
+      "sha256": "53961312b7246dd8613980162e35da057cf5e82b701e7a29e092237c3ddeedae",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -110,7 +110,7 @@
       "document_id": "SCEN-06-DOC2",
       "filename": "SCEN-06_endorsement_cg2010.pdf",
       "relative_path": "fixtures/SCEN-06/SCEN-06_endorsement_cg2010.pdf",
-      "sha256": "83ea48014bf146bcde94e933a95ca1ca8d69b66df7d99e48c6c8d6ca5cad2177",
+      "sha256": "ce054a5b8e473a9112ef9b3f9a769b730616a797732a39e5988e4372335a1130",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -119,7 +119,7 @@
       "document_id": "SCEN-07-DOC1",
       "filename": "SCEN-07_acord25.pdf",
       "relative_path": "fixtures/SCEN-07/SCEN-07_acord25.pdf",
-      "sha256": "81445b931b5aba680ba70bdced1cbc2f69346bd90a293fe2f45a6ede32fca8ce",
+      "sha256": "bbebf8dba05b8e1cda8bbf21bfcfe5c1238458da8f7e837bb39b0473ce01adff",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -128,7 +128,7 @@
       "document_id": "SCEN-07-DOC2",
       "filename": "SCEN-07_endorsement_cg2010.pdf",
       "relative_path": "fixtures/SCEN-07/SCEN-07_endorsement_cg2010.pdf",
-      "sha256": "1bd1b52bf6d5ee03e20977d461c7416100c15e6bbc7feb38d09d25f11b102933",
+      "sha256": "0b01435968ed8eb138668357e21e1ce0c82c4ec693782e3d5ec156e2237460ec",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -137,7 +137,7 @@
       "document_id": "SCEN-08-DOC1",
       "filename": "SCEN-08_acord25.pdf",
       "relative_path": "fixtures/SCEN-08/SCEN-08_acord25.pdf",
-      "sha256": "fff815588bf1a3611cc0a38f3795002e52acb7e970b679856139b9f68e9b6f64",
+      "sha256": "e6bf7dc34842c3f0bae8e2b3453913cddd884d837f6e8d7c3e3803d16c63e831",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -146,7 +146,7 @@
       "document_id": "SCEN-08-DOC2",
       "filename": "SCEN-08_endorsement_cg2010.pdf",
       "relative_path": "fixtures/SCEN-08/SCEN-08_endorsement_cg2010.pdf",
-      "sha256": "da3bc2f4d39ad695005443ffb16f62e588943a01ccf008ed9732d9a1f84f1833",
+      "sha256": "428ed4d27b95529b49059ce3acf3af6bd5fc177985d55598d4c80f93c1958709",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -155,7 +155,7 @@
       "document_id": "SCEN-09-DOC1",
       "filename": "SCEN-09_acord25.pdf",
       "relative_path": "fixtures/SCEN-09/SCEN-09_acord25.pdf",
-      "sha256": "5013c45bcb7bdd5780705260283e9cd36419cb7c12ab134b72cd5e6b0e8c2c5c",
+      "sha256": "45628343649a8a3fc1e63378d4175efca1675f3f63314a653ac0dfe2c2348d5c",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -164,7 +164,7 @@
       "document_id": "SCEN-09-DOC2",
       "filename": "SCEN-09_endorsement_cg2010.pdf",
       "relative_path": "fixtures/SCEN-09/SCEN-09_endorsement_cg2010.pdf",
-      "sha256": "f2f647160a30127c030b5d7cb28f1634cea9ecaa4a7ae0a9defc7ace057c75ee",
+      "sha256": "8bad25ac4c779e6d53c9212882f10b1aba7fbc29a1a6acef6163d6ad58333358",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -173,7 +173,7 @@
       "document_id": "SCEN-10-DOC1",
       "filename": "SCEN-10_acord25.pdf",
       "relative_path": "fixtures/SCEN-10/SCEN-10_acord25.pdf",
-      "sha256": "cb6e978dda0e58a1260363572d64c3085e82a4ff9dc4d621617ba3461d84e053",
+      "sha256": "9535d1ea4f49a995f3c2b74e24c4ef8b98432abb6cdec2f11a92b7c800124b14",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -182,7 +182,7 @@
       "document_id": "SCEN-10-DOC2",
       "filename": "SCEN-10_endorsement_cg2010.pdf",
       "relative_path": "fixtures/SCEN-10/SCEN-10_endorsement_cg2010.pdf",
-      "sha256": "c6e1ac4a9c05428699659e458551f4875a8271cc5900fea13c68b1d39ba0248c",
+      "sha256": "53f51d66d13ce9c70046506d38f784a5f5d7261c43d09f4d09434ea281743367",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -191,7 +191,7 @@
       "document_id": "SCEN-11-DOC1",
       "filename": "SCEN-11_coi.pdf",
       "relative_path": "fixtures/SCEN-11/SCEN-11_coi.pdf",
-      "sha256": "e0638d59684f8aa087d6b0b01575827b82855298a82b6da13437b2d2ccd3ba3f",
+      "sha256": "5c1ea5891a7de19708b34397a5281bbf83e221bfb137b61145fddaa166805e5d",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -200,7 +200,7 @@
       "document_id": "SCEN-11-DOC2",
       "filename": "SCEN-11_endorsement.pdf",
       "relative_path": "fixtures/SCEN-11/SCEN-11_endorsement.pdf",
-      "sha256": "6a3aaaff1129d7514a620b5cd179be40ef3fa0c2e008bbe8160ebab33baabc86",
+      "sha256": "8b4cdb1cdba3705d9b8d2b3345b6b96e09a409d37f65647f7772e96f5587319f",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -209,7 +209,7 @@
       "document_id": "SCEN-12-DOC1",
       "filename": "SCEN-12_coi.pdf",
       "relative_path": "fixtures/SCEN-12/SCEN-12_coi.pdf",
-      "sha256": "a84235bbbdc033b5e81cdb77f9dab3c44bac16803ab7904a3aa7a76bcf3a33a3",
+      "sha256": "5ce442dff25e9026a75dff35510b0c13248d13a092fe27e9e4a77a261144acf0",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -218,7 +218,7 @@
       "document_id": "SCEN-12-DOC2",
       "filename": "SCEN-12_endorsement.pdf",
       "relative_path": "fixtures/SCEN-12/SCEN-12_endorsement.pdf",
-      "sha256": "543a674665a796c31fcbd60aea2105ab534e88752001cf53280f65addde099db",
+      "sha256": "03424dc33cca0cc0c96524d698511474b644c4ac6227d2001a0b63374abc1c23",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -227,7 +227,7 @@
       "document_id": "SCEN-13-DOC1",
       "filename": "SCEN-13_coi.pdf",
       "relative_path": "fixtures/SCEN-13/SCEN-13_coi.pdf",
-      "sha256": "13ec7da1bfb407bc851d79f835e657bce6d7317bea7e34d533c0632e37454525",
+      "sha256": "eefa4d47e3ba66041ecf0f375c3075341e289cb276d234c8584cc56ed50c68ba",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -236,7 +236,7 @@
       "document_id": "SCEN-13-DOC2",
       "filename": "SCEN-13_endorsement.pdf",
       "relative_path": "fixtures/SCEN-13/SCEN-13_endorsement.pdf",
-      "sha256": "b6aba57020bdbe14294ab32cdc53d507f3793ff4f861487802aba2b7451124b6",
+      "sha256": "8c1d857bb62160e000fd71fcb13a2c46915c012e7288f653d2b142b15f4cd705",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -245,7 +245,7 @@
       "document_id": "SCEN-14-DOC1",
       "filename": "SCEN-14_coi.pdf",
       "relative_path": "fixtures/SCEN-14/SCEN-14_coi.pdf",
-      "sha256": "010e6710522d2a548bb494f9d50dfce5080245a8dd7412104cdbb19644578c69",
+      "sha256": "c09d4a2ad2aff79ff5e25ace40fdc6eca686c3d0f802a4dde6eaad507e9c1fac",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -254,7 +254,7 @@
       "document_id": "SCEN-15-DOC1",
       "filename": "SCEN-15_coi.pdf",
       "relative_path": "fixtures/SCEN-15/SCEN-15_coi.pdf",
-      "sha256": "438fc6bfedade826b6a5d5757874c70caf2a6f705257b4c8a040c062464d8cf3",
+      "sha256": "ac45c11c0ef87c7f3dee97e472e94a087970ef09348740698fda595a8554eeba",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -263,7 +263,7 @@
       "document_id": "SCEN-15-DOC2",
       "filename": "SCEN-15_endorsement.pdf",
       "relative_path": "fixtures/SCEN-15/SCEN-15_endorsement.pdf",
-      "sha256": "da238e6f712703f6659461f9fc40973eef0b66dd3a68263ffee90296df992152",
+      "sha256": "4b25d2ac462420b6e3b5706a4abd2ad4157283fbddbb53197da9340351560e13",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -272,7 +272,7 @@
       "document_id": "SCEN-16-DOC1",
       "filename": "SCEN-16_coi.pdf",
       "relative_path": "fixtures/SCEN-16/SCEN-16_coi.pdf",
-      "sha256": "bf2b9f046783df3452e1ad4ee8345c85afc17a99bd42865bb1157fcc8ed11b4f",
+      "sha256": "070d585fcd7e83dd70df92154fd8175122f7a3e55f7fe7dde2cac1a4e942b8f9",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -281,7 +281,7 @@
       "document_id": "SCEN-16-DOC2",
       "filename": "SCEN-16_endorsement.pdf",
       "relative_path": "fixtures/SCEN-16/SCEN-16_endorsement.pdf",
-      "sha256": "c243ae71b1133dd7b3831689b4b6c4f08b3f60490daacf5ff4b01ae141b10975",
+      "sha256": "e953723a843777be1b7119f4620c6c537f91121658c3dd7edd5c47c29140d2c1",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -290,7 +290,7 @@
       "document_id": "SCEN-17-DOC1",
       "filename": "SCEN-17_coi.pdf",
       "relative_path": "fixtures/SCEN-17/SCEN-17_coi.pdf",
-      "sha256": "db8fed51b935c9f276e137bc873f250a4c67a63575b66d19015d6b38b2d07fe5",
+      "sha256": "0f9f6f143463d8ce72a6ce20f14220c0859d823165f941d4a7ad88832244c41c",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -299,7 +299,7 @@
       "document_id": "SCEN-17-DOC2",
       "filename": "SCEN-17_endorsement.pdf",
       "relative_path": "fixtures/SCEN-17/SCEN-17_endorsement.pdf",
-      "sha256": "d809280f0c3b9a11bb253ab2fdbede3d1846ee34222574eb045422b26f730cf5",
+      "sha256": "250ca821658183a502765ffd95d82d3bd386f09d52a2f835560caee4f67b136d",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -308,7 +308,7 @@
       "document_id": "SCEN-18-DOC1",
       "filename": "SCEN-18_coi.pdf",
       "relative_path": "fixtures/SCEN-18/SCEN-18_coi.pdf",
-      "sha256": "e819f6ed3ee7d71e0e388fda0f3799b4cca4bdda037e3b6fb1814f5e3808f36d",
+      "sha256": "2d06d2a1b954857db439c0dd3d5252b76c795520178c998daac415226c235dc4",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -317,7 +317,7 @@
       "document_id": "SCEN-18-DOC2",
       "filename": "SCEN-18_endorsement.pdf",
       "relative_path": "fixtures/SCEN-18/SCEN-18_endorsement.pdf",
-      "sha256": "14739840f6638cd88cd6ed4fa9760a26d7633f412800818c08c8052d3a645b81",
+      "sha256": "b521d3fe6a5ef706f55367c02d5c8c5423458c439b40eb7bf0f906880f0a7071",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -326,7 +326,7 @@
       "document_id": "SCEN-19-DOC1",
       "filename": "SCEN-19_coi.pdf",
       "relative_path": "fixtures/SCEN-19/SCEN-19_coi.pdf",
-      "sha256": "1ab1d39210e409577450f137d03aa5287e0484867f0e409c8a0106bae2a2ca29",
+      "sha256": "99776c618c6d3f74247510d600aefb06c4ab1ac07ed22d036ac95aaedab12d2e",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -335,7 +335,7 @@
       "document_id": "SCEN-19-DOC2",
       "filename": "SCEN-19_endorsement.pdf",
       "relative_path": "fixtures/SCEN-19/SCEN-19_endorsement.pdf",
-      "sha256": "9312ab5977fd3a48012a2b518afba389ad84d1b32e54b7560f083704a22726f2",
+      "sha256": "9b23c36eb1e50f845d69f790cbc624400f565cddc32535f6c753b8d175e64535",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -344,7 +344,7 @@
       "document_id": "SCEN-20-DOC1",
       "filename": "SCEN-20_coi.pdf",
       "relative_path": "fixtures/SCEN-20/SCEN-20_coi.pdf",
-      "sha256": "1958c1f6d62f1bb86261d0753ce581f13aba482c36277fd1f1904683ef17229f",
+      "sha256": "0205dd09ed6c9657b516f8873640c594b4d8a0db51ab0c45852bf652eeb79b61",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -353,7 +353,7 @@
       "document_id": "SCEN-21-DOC1",
       "filename": "SCEN-21_coi.pdf",
       "relative_path": "fixtures/SCEN-21/SCEN-21_coi.pdf",
-      "sha256": "9380ec2f0dbaa581dbbb7b4d6cbfe2b5cc425d3d0fc79c4399333ebfb0660503",
+      "sha256": "19488a5d99915cc4ea7faabcdc413a20c4df4155c59330e796dcd6d603ab904b",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -362,7 +362,7 @@
       "document_id": "SCEN-21-DOC2",
       "filename": "SCEN-21_blanket_endorsement.pdf",
       "relative_path": "fixtures/SCEN-21/SCEN-21_blanket_endorsement.pdf",
-      "sha256": "1ced66a1f4e12428a5c4d64505e63ab3051937a2f389d3f2cd8b6d296bb9c636",
+      "sha256": "81e088210c22275657f139e66d63dd0efc80045536cd0ec2d951e59160550dff",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -371,7 +371,7 @@
       "document_id": "SCEN-22-DOC1",
       "filename": "SCEN-22_coi.pdf",
       "relative_path": "fixtures/SCEN-22/SCEN-22_coi.pdf",
-      "sha256": "1c8cc26f6094d9fec34c94681340552de8eea6b90081441455cbaea8e8acb6d1",
+      "sha256": "2a73f9a28cdb055ad0314b91418817e0a61e4a95ae8ee0f4d17c89cdc05c4624",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -380,7 +380,7 @@
       "document_id": "SCEN-23-DOC1",
       "filename": "SCEN-23_coi.pdf",
       "relative_path": "fixtures/SCEN-23/SCEN-23_coi.pdf",
-      "sha256": "e9883480b39b940c4be129899a17fad96479a99bc8f291c6beea5b21bc91c86a",
+      "sha256": "7b23459d8e8d796a93ca94ea1989db09b1ddd7a77c364857d92e0e91b08e7a96",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -389,7 +389,7 @@
       "document_id": "SCEN-24-DOC1",
       "filename": "SCEN-24_coi.pdf",
       "relative_path": "fixtures/SCEN-24/SCEN-24_coi.pdf",
-      "sha256": "42fbcffab5075ec3d32a4bd4ea4b8a6584264347ec1374d37014aa3f092d2f93",
+      "sha256": "d1880e359c49b4500219cb31c9e5099d244dca9af129f7f3c30faddde3948843",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -398,7 +398,7 @@
       "document_id": "SCEN-24-DOC2",
       "filename": "SCEN-24_endorsement.pdf",
       "relative_path": "fixtures/SCEN-24/SCEN-24_endorsement.pdf",
-      "sha256": "79cb6d42285ac62af6a744003a53b32a9b24ee8a2280755ba3805af88a3be6ed",
+      "sha256": "43a8accdbf990908c87a388977ec667e35a306979fe5d37af9a5f7075f695d39",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -407,7 +407,7 @@
       "document_id": "SCEN-25-DOC1",
       "filename": "SCEN-25_coi.pdf",
       "relative_path": "fixtures/SCEN-25/SCEN-25_coi.pdf",
-      "sha256": "d4d32a61d6850e37151ae973258e653d61cfb29094eaec0a42f980cdef2ce141",
+      "sha256": "d7e1356ab1cbb1435ec9d843dae50890c18c83892e3a1e169090f4f057a34b86",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -416,7 +416,7 @@
       "document_id": "SCEN-26-DOC1",
       "filename": "SCEN-26_coi.pdf",
       "relative_path": "fixtures/SCEN-26/SCEN-26_coi.pdf",
-      "sha256": "c606b067da8539f208f95a76fe94237aa8f373ab92aca42c855a6622074cf83a",
+      "sha256": "1be497cb43f2dc558b2672bce5e2c9d2659868786877367f9d9e18caf08ec879",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -425,7 +425,7 @@
       "document_id": "SCEN-27-DOC1",
       "filename": "SCEN-27_coi.pdf",
       "relative_path": "fixtures/SCEN-27/SCEN-27_coi.pdf",
-      "sha256": "8367d0e89472cc810b5773c37ded10b3b05909bf2f788f0c07ede74405084f63",
+      "sha256": "7347ecd65980836dc458739aa65e17dbbb482a915acda979879c2ef93f581755",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -434,7 +434,7 @@
       "document_id": "SCEN-27-DOC2",
       "filename": "SCEN-27_endorsement.pdf",
       "relative_path": "fixtures/SCEN-27/SCEN-27_endorsement.pdf",
-      "sha256": "7654507c409590fa0723d8514298daf807c371c4f5f9211c0d1306914e9da559",
+      "sha256": "40196fbaee58e285e7968e31b49bd15dcab104d97f52af0aba03ebd9347f2abd",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -443,7 +443,7 @@
       "document_id": "SCEN-28-DOC1",
       "filename": "SCEN-28_coi.pdf",
       "relative_path": "fixtures/SCEN-28/SCEN-28_coi.pdf",
-      "sha256": "ff6d355b047afb0cd220df5bd7c545476992123b87de39afbf4aca75cef0a852",
+      "sha256": "1001fbbb9091d422799174e813342219e38a6fde00545eaf38412bdf96cb90bd",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -452,7 +452,7 @@
       "document_id": "SCEN-28-DOC2",
       "filename": "SCEN-28_blanket_endorsement.pdf",
       "relative_path": "fixtures/SCEN-28/SCEN-28_blanket_endorsement.pdf",
-      "sha256": "bb5b44fab93928032a5119a35c01ef7f903e4b6f730846f9cf8af8d366a1ad8b",
+      "sha256": "72afa4c3d8285f71b67a1540301c91af4f58552df1b955a38077546306146cf8",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -461,7 +461,7 @@
       "document_id": "SCEN-29-DOC1",
       "filename": "SCEN-29_truncated_page1.pdf",
       "relative_path": "fixtures/SCEN-29/SCEN-29_truncated_page1.pdf",
-      "sha256": "fa2fe9b586b08a94abd2b95065413b4baeed868de3f61c5339bba2402bbbb912",
+      "sha256": "1183eb9fdaef298ca590fa03f1ca1709876f3fc8f3c4e8305d2549d36d877f67",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -470,7 +470,7 @@
       "document_id": "SCEN-30-DOC1",
       "filename": "SCEN-30_truncated_page1.pdf",
       "relative_path": "fixtures/SCEN-30/SCEN-30_truncated_page1.pdf",
-      "sha256": "67e7437a5c7f0ff154b986b0a9389c6c3261a774096e331356f462f2d020d799",
+      "sha256": "b40fa6091f2043ddce0c18eb2b730ca615ffaf54ccc03b69cbe905aa3351274f",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -479,7 +479,7 @@
       "document_id": "SCEN-31-DOC1",
       "filename": "SCEN-31_truncated_page1.pdf",
       "relative_path": "fixtures/SCEN-31/SCEN-31_truncated_page1.pdf",
-      "sha256": "740a0f8214684ef5f2b3b75b0b5564e88001e8b1b19a44611af8129dd23c20a1",
+      "sha256": "6c374d9238790b7ce5f6a1a2df09071c2323efd0e0f5f6ccd3f7ed6bee3d62b8",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -488,7 +488,7 @@
       "document_id": "SCEN-32-DOC1",
       "filename": "SCEN-32_truncated_page1.pdf",
       "relative_path": "fixtures/SCEN-32/SCEN-32_truncated_page1.pdf",
-      "sha256": "5b988ddb0c33e136a1ab2df4f05cba802f7899b373a09541ac33b948e00fcb64",
+      "sha256": "90dd154b11842b967171ad4845adb54b94accb04683908ef2033315962675e28",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -497,7 +497,7 @@
       "document_id": "SCEN-33-DOC1",
       "filename": "SCEN-33_truncated_page1.pdf",
       "relative_path": "fixtures/SCEN-33/SCEN-33_truncated_page1.pdf",
-      "sha256": "de74247d1776f7de5ba2955226e3057477a378f8c057cb5d27ce3051ae7a9c0a",
+      "sha256": "12ba3664c412a3940c6b41572e8b9e699cbaaf3f94e956fd13201b9d648f5932",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -506,7 +506,7 @@
       "document_id": "SCEN-34-DOC1",
       "filename": "SCEN-34_coi.pdf",
       "relative_path": "fixtures/SCEN-34/SCEN-34_coi.pdf",
-      "sha256": "2ed0c5e16258091e96d345eb83e4de1a567a4898131cf46c9d1ecd53e16a028c",
+      "sha256": "fef4813ae65f24109b84aae0a3081c06b8963059df04d0b1aeaae9b90cb63060",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -515,7 +515,7 @@
       "document_id": "SCEN-34-DOC2",
       "filename": "SCEN-34_contradictory_doc.pdf",
       "relative_path": "fixtures/SCEN-34/SCEN-34_contradictory_doc.pdf",
-      "sha256": "472a077ba38c72bad18eac818e81913f2072c90eb0b3f2757eef0238cc907144",
+      "sha256": "dcabdf86133cb7f17bdf69546e2cc3021b7031570a242ea3f4437659387dbd88",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -524,7 +524,7 @@
       "document_id": "SCEN-35-DOC1",
       "filename": "SCEN-35_coi.pdf",
       "relative_path": "fixtures/SCEN-35/SCEN-35_coi.pdf",
-      "sha256": "03aacb9b31d0ef2ece84807d975051041a0336092bab9f30f6ced82beab0481d",
+      "sha256": "5468e25312c76675053fb89501b225e061468b65f5aaa4e470ba707ea690e162",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -533,7 +533,7 @@
       "document_id": "SCEN-35-DOC2",
       "filename": "SCEN-35_contradictory_doc.pdf",
       "relative_path": "fixtures/SCEN-35/SCEN-35_contradictory_doc.pdf",
-      "sha256": "8067bcc25b605a918928694ec16d563dcb00706ad9f10e841c539e1645276c06",
+      "sha256": "1c7aa7a90a37f8a2d6fcfd582ee0c435dbe037559644157363c00243b9e45cf0",
       "page_count": 1,
       "document_type": "policy_dec_page"
     },
@@ -542,7 +542,7 @@
       "document_id": "SCEN-36-DOC1",
       "filename": "SCEN-36_coi.pdf",
       "relative_path": "fixtures/SCEN-36/SCEN-36_coi.pdf",
-      "sha256": "04a08e18600d703a5f04e7c1fbd0c6798df573bfdcda4adc1a5cc1ca7ca92064",
+      "sha256": "a7393cb2400a4137ddad27ee2d7eb12e414906a071dbfa1ff4bbac07c4be2ffd",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -551,7 +551,7 @@
       "document_id": "SCEN-36-DOC2",
       "filename": "SCEN-36_contradictory_doc.pdf",
       "relative_path": "fixtures/SCEN-36/SCEN-36_contradictory_doc.pdf",
-      "sha256": "39fef3cd682ed7d2e4a3c35d95f69ee8d2bca0e2a310e3cb0c3195235e9d399e",
+      "sha256": "4e4e9591701e845cb36deb8600b5d43aeebb7c5d86aed3bd3f989762a654ea98",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -560,7 +560,7 @@
       "document_id": "SCEN-37-DOC1",
       "filename": "SCEN-37_coi.pdf",
       "relative_path": "fixtures/SCEN-37/SCEN-37_coi.pdf",
-      "sha256": "82471ba582d30a0487e826e965f1e03701b6fe10d1bad8da8dc8230e7456b2d1",
+      "sha256": "8ebff9d228dedf2f7e027369f972874e227ef6aa96dcbacb621382d3713cce9e",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -569,7 +569,7 @@
       "document_id": "SCEN-37-DOC2",
       "filename": "SCEN-37_contradictory_doc.pdf",
       "relative_path": "fixtures/SCEN-37/SCEN-37_contradictory_doc.pdf",
-      "sha256": "b043ab2bacd9b91fd704605303ebf7e893854f607c954aa223e557b6f5d38f88",
+      "sha256": "da3ffeef78d987906a772dfd07d84442f5eb58cb4e039f5c2c34eed3461d3b43",
       "page_count": 1,
       "document_type": "endorsement"
     },
@@ -578,7 +578,7 @@
       "document_id": "SCEN-38-DOC1",
       "filename": "SCEN-38_coi.pdf",
       "relative_path": "fixtures/SCEN-38/SCEN-38_coi.pdf",
-      "sha256": "fc4069e18be6147e9b7aed4c140846e6af4a3d7f344e536cfb6bb829c6d0e5bb",
+      "sha256": "d21c9dd39d0c6dfbb846acf5e5c3294623dc0a9eb77d20b16baede0fd181c9b5",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -587,7 +587,7 @@
       "document_id": "SCEN-39-DOC1",
       "filename": "SCEN-39_coi.pdf",
       "relative_path": "fixtures/SCEN-39/SCEN-39_coi.pdf",
-      "sha256": "7dd76704e009eab762949163160989efc7a56ee7dc08bb2ba9b9ab1a114f5018",
+      "sha256": "1b7f8159c158197018675b183757875a5dd8d4106e00c59d9bdcb4ea876c194f",
       "page_count": 1,
       "document_type": "coi"
     },
@@ -596,7 +596,7 @@
       "document_id": "SCEN-40-DOC1",
       "filename": "SCEN-40_coi.pdf",
       "relative_path": "fixtures/SCEN-40/SCEN-40_coi.pdf",
-      "sha256": "f009612bb158685f9468129d7245cfd74b6d5fca948c8f357bbcda129a154571",
+      "sha256": "9797c1c0d4251b45b97d752023345dd8add89b94e1ead53bacda4b17900ed710",
       "page_count": 1,
       "document_type": "coi"
     }

@@ -273,6 +273,9 @@ class ScenarioEvaluationResult(BaseModel):
     processing_status: str = "success"
     error_type: Optional[str] = None
     error_message: Optional[str] = None
+    status_code: Optional[int] = None
+    error_code: Optional[str] = None
+    request_id: Optional[str] = None
     findings_results: List[ScenarioFindingResult] = Field(default_factory=list)
     execution_time_seconds: float = 0.0
 

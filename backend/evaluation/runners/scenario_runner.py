@@ -495,6 +495,7 @@ def run_single_scenario(
         doc_sets: List[ExtractedDocumentSet] = []
         doc_types_submitted: List[DocumentType] = []
         pipeline_errors: List[str] = []
+        failed_pipeline_results: List[Any] = []
 
         for doc_gt in scenario.documents:
             pdf_path = scen_dir / doc_gt.filename
@@ -524,16 +525,26 @@ def run_single_scenario(
                 doc_sets.append(pipeline_res.document_set)
             elif pipeline_res.errors or pipeline_res.error_message:
                 pipeline_errors.extend(pipeline_res.errors or [pipeline_res.error_message])
+                failed_pipeline_results.append(pipeline_res)
 
         # If all documents in the scenario failed extraction due to pipeline/provider errors,
         # fail the scenario explicitly rather than evaluating compliance on empty documents.
         if not doc_sets and pipeline_errors:
             elapsed = round(time.time() - start_time, 3)
+            first_fail = failed_pipeline_results[0] if failed_pipeline_results else None
+            primary_error_type = (first_fail.error_type if first_fail and getattr(first_fail, "error_type", None) else "ExtractionProviderFailure")
+            primary_status_code = getattr(first_fail, "status_code", None) if first_fail else None
+            primary_error_code = getattr(first_fail, "error_code", None) if first_fail else None
+            primary_request_id = getattr(first_fail, "request_id", None) if first_fail else None
+
+            is_config_err = any("key" in e.lower() or "configuration" in e.lower() for e in pipeline_errors)
+            pred_status = "configuration_error" if is_config_err else "extraction_failed"
+
             return ScenarioEvaluationResult(
                 scenario_id=scen_id,
                 title=scenario.title,
                 expected_status=scenario.expected_overall_status.value,
-                predicted_status="configuration_error" if any("key" in e.lower() or "configuration" in e.lower() for e in pipeline_errors) else "extraction_failed",
+                predicted_status=pred_status,
                 status_matched=False,
                 expected_requires_human_review=scenario.expected_requires_human_review,
                 predicted_requires_human_review=True,
@@ -541,8 +552,11 @@ def run_single_scenario(
                 is_unsafe_pass=False,
                 is_false_compliant=False,
                 processing_status="error",
-                error_type="ExtractionProviderFailure",
+                error_type=primary_error_type,
                 error_message="; ".join(pipeline_errors),
+                status_code=primary_status_code,
+                error_code=primary_error_code,
+                request_id=primary_request_id,
                 execution_time_seconds=elapsed,
             )
 
@@ -768,11 +782,18 @@ def execute_cohort_benchmark(
                         "page_correct": page_correct,
                     })
         else:
-            failures.append({
+            failure_dict: Dict[str, Any] = {
                 "scenario_id": sc.scenario_id,
                 "error_type": res.error_type,
                 "error_message": res.error_message,
-            })
+            }
+            if getattr(res, "status_code", None) is not None:
+                failure_dict["status_code"] = res.status_code
+            if getattr(res, "error_code", None) is not None:
+                failure_dict["error_code"] = res.error_code
+            if getattr(res, "request_id", None) is not None:
+                failure_dict["request_id"] = res.request_id
+            failures.append(failure_dict)
 
     # 5. Compute metrics
     fcr_metric, ucr_metric = calculate_safety_metrics(scenarios, results)
@@ -953,6 +974,27 @@ def generate_markdown_report(report: ScenarioBenchmarkReport, md_path: Path) -> 
         lines.append(
             f"| `{res.scenario_id}` | `{res.expected_status}` | `{res.predicted_status}` | {match_icon} | {hr_icon} | {unsafe_tag} | {res.execution_time_seconds:.2f}s |"
         )
+
+    if report.execution_failures:
+        lines.extend([
+            f"",
+            f"---",
+            f"",
+            f"## 7. Execution Failures & Diagnostic Details",
+            f"",
+            f"| Scenario ID | Error Type | Status Code | Error Code | Request ID | Error Message |",
+            f"| :--- | :--- | :---: | :---: | :---: | :--- |",
+        ])
+        for fail in report.execution_failures:
+            scen_id = fail.get("scenario_id", "N/A")
+            err_type = fail.get("error_type", "N/A")
+            status = str(fail.get("status_code", "-"))
+            err_code = fail.get("error_code") or "-"
+            req_id = fail.get("request_id") or "-"
+            err_msg = fail.get("error_message", "N/A")
+            lines.append(
+                f"| `{scen_id}` | `{err_type}` | {status} | `{err_code}` | `{req_id}` | {err_msg} |"
+            )
 
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")

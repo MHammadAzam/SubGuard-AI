@@ -50,47 +50,137 @@ def _format_pydantic_validation_error(val_err: Exception) -> str:
 
 
 def extract_http_error_details(exc: Exception) -> Dict[str, Any]:
-    """Extract structured details from an SDK/HTTP exception safely without leaking credentials."""
+    """Extract structured details from an SDK/HTTP exception safely without leaking credentials.
+
+    Defensive extraction precedence:
+    1. Standard structured error body: body['error']['message'], ['type'], ['code'], ['param']
+    2. Alternative structured fields: body['message'], body['detail'], body['description']
+    3. Raw HTTP response text: exc.response.text, if safely accessible
+    4. Final fallback: str(exc)
+    """
     details: Dict[str, Any] = {
         "status_code": getattr(exc, "status_code", None),
         "message": None,
-        "error_type": None,
+        "error_type": getattr(exc, "type", None),
         "error_code": getattr(exc, "code", None),
-        "error_param": None,
+        "error_param": getattr(exc, "param", None),
         "request_id": getattr(exc, "request_id", None),
     }
 
-    if details["status_code"] is None and hasattr(exc, "response") and hasattr(exc.response, "status_code"):
-        details["status_code"] = getattr(exc.response, "status_code", None)
+    # Safely extract status code from response if not on exc directly
+    try:
+        if details["status_code"] is None and hasattr(exc, "response"):
+            details["status_code"] = getattr(exc.response, "status_code", None)
+    except Exception:
+        pass
 
-    if details["request_id"] is None and hasattr(exc, "response") and hasattr(exc.response, "headers"):
-        try:
-            details["request_id"] = exc.response.headers.get("x-request-id")
-        except Exception:
-            pass
+    # Safely extract request ID from response headers if not on exc directly
+    try:
+        if details["request_id"] is None and hasattr(exc, "response"):
+            headers = getattr(exc.response, "headers", None)
+            if headers and hasattr(headers, "get"):
+                details["request_id"] = headers.get("x-request-id")
+    except Exception:
+        pass
 
+    extracted_msg: Optional[str] = None
     body = getattr(exc, "body", None)
+
+    # 1. Standard structured error body (OpenAI-compatible)
     if isinstance(body, dict):
         err_obj = body.get("error")
         if isinstance(err_obj, dict):
-            details["message"] = err_obj.get("message")
-            details["error_type"] = err_obj.get("type")
-            details["error_code"] = err_obj.get("code") or details["error_code"]
-            details["error_param"] = err_obj.get("param")
+            if err_obj.get("message") is not None and str(err_obj.get("message")).strip():
+                extracted_msg = str(err_obj.get("message")).strip()
+            if err_obj.get("type"):
+                details["error_type"] = str(err_obj.get("type"))
+            if err_obj.get("code"):
+                details["error_code"] = str(err_obj.get("code"))
+            if err_obj.get("param"):
+                details["error_param"] = str(err_obj.get("param"))
         elif isinstance(err_obj, str) and err_obj.strip():
-            details["message"] = err_obj.strip()
-        elif "message" in body and isinstance(body["message"], str) and body["message"].strip():
-            details["message"] = body["message"].strip()
-    elif isinstance(body, str) and body.strip():
-        details["message"] = body.strip()
+            extracted_msg = err_obj.strip()
 
-    raw_msg = details["message"]
-    if not raw_msg or not str(raw_msg).strip():
-        raw_msg = str(exc)
-    else:
-        raw_msg = str(raw_msg).strip()
+    # 2. Alternative structured fields in body
+    if not extracted_msg and isinstance(body, dict):
+        # 2a. body["message"]
+        if body.get("message") is not None and str(body.get("message")).strip():
+            extracted_msg = str(body.get("message")).strip()
+        # 2b. body["detail"]
+        elif body.get("detail") is not None:
+            detail_val = body.get("detail")
+            if isinstance(detail_val, str) and detail_val.strip():
+                extracted_msg = detail_val.strip()
+            elif isinstance(detail_val, list):
+                parts = []
+                for item in detail_val:
+                    if isinstance(item, dict):
+                        loc = ".".join(str(l) for l in item.get("loc", []))
+                        msg = item.get("msg", str(item))
+                        parts.append(f"{loc}: {msg}" if loc else str(msg))
+                    else:
+                        parts.append(str(item))
+                if parts:
+                    extracted_msg = "; ".join(parts)
+            elif isinstance(detail_val, dict):
+                extracted_msg = json.dumps(detail_val)
+            elif str(detail_val).strip():
+                extracted_msg = str(detail_val).strip()
+        # 2c. body["description"]
+        elif body.get("description") is not None and str(body.get("description")).strip():
+            extracted_msg = str(body.get("description")).strip()
 
-    details["message"] = sanitize_error_message(raw_msg)
+    # If body is a plain non-empty string
+    if not extracted_msg and isinstance(body, str) and body.strip():
+        extracted_msg = body.strip()
+
+    # 3. Raw HTTP response text, if safely accessible
+    if not extracted_msg:
+        try:
+            resp = getattr(exc, "response", None)
+            if resp is not None and hasattr(resp, "text"):
+                resp_text = resp.text
+                if isinstance(resp_text, str) and resp_text.strip():
+                    try:
+                        parsed_json = json.loads(resp_text)
+                        if isinstance(parsed_json, dict):
+                            err_sub = parsed_json.get("error")
+                            if isinstance(err_sub, dict) and err_sub.get("message"):
+                                extracted_msg = str(err_sub.get("message")).strip()
+                                if err_sub.get("type") and not details["error_type"]:
+                                    details["error_type"] = str(err_sub.get("type"))
+                                if err_sub.get("code") and not details["error_code"]:
+                                    details["error_code"] = str(err_sub.get("code"))
+                                if err_sub.get("param") and not details["error_param"]:
+                                    details["error_param"] = str(err_sub.get("param"))
+                            elif parsed_json.get("message"):
+                                extracted_msg = str(parsed_json.get("message")).strip()
+                            elif parsed_json.get("detail"):
+                                det = parsed_json.get("detail")
+                                extracted_msg = str(det) if not isinstance(det, (dict, list)) else json.dumps(det)
+                            elif parsed_json.get("description"):
+                                extracted_msg = str(parsed_json.get("description")).strip()
+                    except Exception:
+                        pass
+                    if not extracted_msg:
+                        extracted_msg = resp_text.strip()
+        except Exception:
+            pass
+
+    # 4. Final fallback: str(exc)
+    if not extracted_msg or not str(extracted_msg).strip():
+        try:
+            extracted_msg = str(exc)
+        except Exception:
+            extracted_msg = "Unknown error"
+
+    # Truncate excessively long error messages (avoid giant HTML / raw dumps)
+    MAX_ERROR_MSG_LENGTH = 1000
+    if len(extracted_msg) > MAX_ERROR_MSG_LENGTH:
+        extracted_msg = extracted_msg[:MAX_ERROR_MSG_LENGTH] + "... [truncated]"
+
+    # Sanitize and redact credentials in all string fields
+    details["message"] = sanitize_error_message(extracted_msg)
     if details["error_type"]:
         details["error_type"] = sanitize_error_message(str(details["error_type"]))
     if details["error_code"]:

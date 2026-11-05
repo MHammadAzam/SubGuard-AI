@@ -1452,5 +1452,304 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
         self.assertEqual(mock_client.chat.completions.create.call_count, 1)
 
 
+class Phase7325ErrorObservabilityTests(unittest.TestCase):
+    """Targeted offline unit tests for Phase 7.3.2.5 error observability and metadata preservation."""
+
+    def test_1_standard_openai_error_body(self):
+        """1. Standard OpenAI-style error body extracts message, type, code, and param."""
+        err = Exception("Error code: 400")
+        err.status_code = 400
+        err.body = {
+            "error": {
+                "message": "Invalid model parameter: response_format",
+                "type": "invalid_request_error",
+                "code": "param_error",
+                "param": "response_format",
+            }
+        }
+        details = extract_http_error_details(err)
+        self.assertEqual(details["status_code"], 400)
+        self.assertEqual(details["message"], "Invalid model parameter: response_format")
+        self.assertEqual(details["error_type"], "invalid_request_error")
+        self.assertEqual(details["error_code"], "param_error")
+        self.assertEqual(details["error_param"], "response_format")
+
+    def test_2_alternative_detail_error_body_string_and_list(self):
+        """2. Alternative 'detail' error body handles both plain string and FastAPI list of dicts."""
+        # 2a. Plain string in detail
+        err_str = Exception("Error code: 400")
+        err_str.status_code = 400
+        err_str.body = {"detail": "Model endpoint requires text-only input"}
+        details_str = extract_http_error_details(err_str)
+        self.assertEqual(details_str["message"], "Model endpoint requires text-only input")
+
+        # 2b. FastAPI list of dicts in detail
+        err_list = Exception("Error code: 422")
+        err_list.status_code = 422
+        err_list.body = {
+            "detail": [
+                {"loc": ["body", "messages"], "msg": "field required", "type": "value_error.missing"},
+                {"loc": ["body", "model"], "msg": "unknown model", "type": "value_error"},
+            ]
+        }
+        details_list = extract_http_error_details(err_list)
+        self.assertIn("body.messages: field required", details_list["message"])
+        self.assertIn("body.model: unknown model", details_list["message"])
+
+    def test_3_alternative_description_error_body(self):
+        """3. Alternative 'description' error body is safely extracted."""
+        err = Exception("Error code: 400")
+        err.status_code = 400
+        err.body = {"description": "Upstream proxy rejected request payload structure"}
+        details = extract_http_error_details(err)
+        self.assertEqual(details["message"], "Upstream proxy rejected request payload structure")
+
+    def test_4_raw_response_text_fallback(self):
+        """4. Raw HTTP response text (JSON or plain string) is extracted when body is None."""
+        # 4a. Response text is JSON
+        mock_resp_json = MagicMock()
+        mock_resp_json.text = json.dumps({"error": {"message": "Extracted from raw JSON response text", "code": "json_err"}})
+        mock_resp_json.status_code = 400
+        mock_resp_json.headers = {"x-request-id": "req-json-raw"}
+
+        err_json = Exception("Error code: 400")
+        err_json.response = mock_resp_json
+        err_json.body = None
+
+        details_json = extract_http_error_details(err_json)
+        self.assertEqual(details_json["message"], "Extracted from raw JSON response text")
+        self.assertEqual(details_json["error_code"], "json_err")
+        self.assertEqual(details_json["request_id"], "req-json-raw")
+
+        # 4b. Response text is plain non-JSON text (e.g. gateway error)
+        mock_resp_plain = MagicMock()
+        mock_resp_plain.text = "Bad Gateway: Upstream backend did not respond"
+        mock_resp_plain.status_code = 502
+
+        err_plain = Exception("Error code: 502")
+        err_plain.response = mock_resp_plain
+        err_plain.body = None
+
+        details_plain = extract_http_error_details(err_plain)
+        self.assertEqual(details_plain["message"], "Bad Gateway: Upstream backend did not respond")
+        self.assertEqual(details_plain["status_code"], 502)
+
+    def test_5_missing_or_malformed_response_body(self):
+        """5. Missing or malformed body (int, empty dict, stream closed) never raises an exception."""
+        for malformed_body in [None, 12345, [], {}, "   "]:
+            err = Exception("Error code: 400")
+            err.status_code = 400
+            err.body = malformed_body
+            details = extract_http_error_details(err)
+            self.assertIsNotNone(details["message"])
+            self.assertEqual(details["status_code"], 400)
+
+        # Response text property raising an exception
+        mock_resp_broken = MagicMock()
+        type(mock_resp_broken).text = unittest.mock.PropertyMock(side_effect=RuntimeError("Stream closed"))
+        err_broken = Exception("Error code: 500")
+        err_broken.response = mock_resp_broken
+        details_broken = extract_http_error_details(err_broken)
+        self.assertIn("Error code: 500", details_broken["message"])
+
+    def test_6_credential_redaction(self):
+        """6. API keys, authorization headers, and bearer tokens are redacted across all fields."""
+        err = Exception("Error code: 400")
+        err.body = {
+            "error": {
+                "message": "Authorization failed with Bearer sk-or-v1-abcdef0123456789abcdef0123456789 and AIzaSyD-123456789012345678901234567890123",
+                "type": "invalid_key",
+                "param": "api_key=sk-abcdef01234567890123456789",
+                "code": "auth_token=supersecrettoken123",
+            }
+        }
+        details = extract_http_error_details(err)
+        for field in ["message", "error_param", "error_code"]:
+            val = details[field]
+            self.assertNotIn("sk-or-v1-", val)
+            self.assertNotIn("AIzaSyD-", val)
+            self.assertNotIn("sk-abcdef", val)
+            self.assertNotIn("supersecrettoken123", val)
+            self.assertTrue("[REDACTED" in val or "REDACTED" in val)
+
+    def test_7_error_message_truncation(self):
+        """7. Excessively long error messages (>1000 chars) are cleanly truncated."""
+        err = Exception("Error code: 400")
+        err.body = {"error": {"message": "A" * 2500}}
+        details = extract_http_error_details(err)
+        self.assertTrue(len(details["message"]) <= 1025)
+        self.assertTrue(details["message"].endswith("... [truncated]"))
+
+    def test_8_structured_metadata_propagation_into_scenario_reports(self):
+        """8. ScenarioEvaluationResult and Markdown report preserve structured error metadata."""
+        from evaluation.schemas.reports import (
+            FindingMetricStats,
+            HumanReviewMetricStats,
+            SafetyMetricResult,
+            ScenarioBenchmarkReport,
+            ScenarioEvaluationResult,
+            ScenarioEvidenceMetricStats,
+            SubmissionMetricStats,
+        )
+        from evaluation.runners.scenario_runner import generate_markdown_report
+        import tempfile
+        from pathlib import Path
+
+        scen_res = ScenarioEvaluationResult(
+            scenario_id="SCEN-01",
+            title="Standard Clean COI",
+            expected_status="compliant",
+            predicted_status="extraction_failed",
+            status_matched=False,
+            processing_status="error",
+            error_type="ExtractionInvalidRequestError",
+            error_message="OpenRouter invalid request/model error (HTTP 400): Model does not support JSON mode",
+            status_code=400,
+            error_code="unsupported_response_format",
+            request_id="req-obs-400",
+            execution_time_seconds=1.23,
+        )
+
+        # JSON serialization preserves all structured fields
+        json_dump = scen_res.model_dump()
+        self.assertEqual(json_dump["error_type"], "ExtractionInvalidRequestError")
+        self.assertEqual(json_dump["status_code"], 400)
+        self.assertEqual(json_dump["error_code"], "unsupported_response_format")
+        self.assertEqual(json_dump["request_id"], "req-obs-400")
+
+        # Build dummy benchmark report with execution_failures
+        report = ScenarioBenchmarkReport(
+            benchmark_id="test_bench_diag",
+            timestamp="2026-11-05T00:00:00Z",
+            manifest_version="cohort_v1.0.0",
+            manifest_hash="dummyhash",
+            provider_name="openrouter",
+            model_name="nvidia/nemotron-3.5-super-vl:free",
+            total_scenarios=1,
+            successful_scenarios=0,
+            failed_scenarios=1,
+            submission_metrics=SubmissionMetricStats(total_scenarios=1),
+            finding_metrics=FindingMetricStats(total_findings=0),
+            fcr_metric=SafetyMetricResult(metric_name="FCR", numerator=0, denominator=0, rate_percentage=None, rate_string="N/A"),
+            ucr_metric=SafetyMetricResult(metric_name="UCR", numerator=0, denominator=0, rate_percentage=None, rate_string="N/A"),
+            human_review_metrics=HumanReviewMetricStats(),
+            evidence_metrics=ScenarioEvidenceMetricStats(),
+            scenario_results=[scen_res],
+            execution_failures=[{
+                "scenario_id": "SCEN-01",
+                "error_type": scen_res.error_type,
+                "status_code": scen_res.status_code,
+                "error_code": scen_res.error_code,
+                "request_id": scen_res.request_id,
+                "error_message": scen_res.error_message,
+            }],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "diag_report.md"
+            generate_markdown_report(report, md_path)
+            content = md_path.read_text(encoding="utf-8")
+
+            # Check that Section 7 Execution Failures & Diagnostic Details is rendered
+            self.assertIn("## 7. Execution Failures & Diagnostic Details", content)
+            self.assertIn("`SCEN-01`", content)
+            self.assertIn("`ExtractionInvalidRequestError`", content)
+            self.assertIn("400", content)
+            self.assertIn("`unsupported_response_format`", content)
+            self.assertIn("`req-obs-400`", content)
+            self.assertIn("Model does not support JSON mode", content)
+
+    def test_9_missing_optional_metadata_handled_gracefully(self):
+        """9. Missing optional metadata (None status_code, error_code, request_id) handled safely."""
+        from evaluation.schemas.reports import (
+            FindingMetricStats,
+            HumanReviewMetricStats,
+            SafetyMetricResult,
+            ScenarioBenchmarkReport,
+            ScenarioEvaluationResult,
+            ScenarioEvidenceMetricStats,
+            SubmissionMetricStats,
+        )
+        from evaluation.runners.scenario_runner import generate_markdown_report
+        import tempfile
+        from pathlib import Path
+
+        scen_res = ScenarioEvaluationResult(
+            scenario_id="SCEN-02",
+            title="Policy Cancellation",
+            expected_status="non_compliant",
+            predicted_status="extraction_failed",
+            status_matched=False,
+            processing_status="error",
+            error_type="ExtractionProviderError",
+            error_message="General provider network glitch",
+            status_code=None,
+            error_code=None,
+            request_id=None,
+        )
+
+        self.assertIsNone(scen_res.status_code)
+        self.assertIsNone(scen_res.error_code)
+        self.assertIsNone(scen_res.request_id)
+
+        report = ScenarioBenchmarkReport(
+            benchmark_id="test_bench_missing_meta",
+            timestamp="2026-11-05T00:00:00Z",
+            manifest_version="cohort_v1.0.0",
+            manifest_hash="dummyhash",
+            provider_name="openrouter",
+            total_scenarios=1,
+            successful_scenarios=0,
+            failed_scenarios=1,
+            submission_metrics=SubmissionMetricStats(total_scenarios=1),
+            finding_metrics=FindingMetricStats(total_findings=0),
+            fcr_metric=SafetyMetricResult(metric_name="FCR", numerator=0, denominator=0, rate_percentage=None, rate_string="N/A"),
+            ucr_metric=SafetyMetricResult(metric_name="UCR", numerator=0, denominator=0, rate_percentage=None, rate_string="N/A"),
+            human_review_metrics=HumanReviewMetricStats(),
+            evidence_metrics=ScenarioEvidenceMetricStats(),
+            scenario_results=[scen_res],
+            execution_failures=[{
+                "scenario_id": "SCEN-02",
+                "error_type": scen_res.error_type,
+                "error_message": scen_res.error_message,
+            }],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "missing_meta_report.md"
+            generate_markdown_report(report, md_path)
+            content = md_path.read_text(encoding="utf-8")
+            self.assertIn("## 7. Execution Failures & Diagnostic Details", content)
+            self.assertIn("`SCEN-02`", content)
+            self.assertIn("`-`", content)
+
+    def test_10_provider_failure_never_produces_compliant(self):
+        """10. Provider failures never produce COMPLIANT, false compliant, or unsafe pass."""
+        from evaluation.schemas.reports import ScenarioEvaluationResult
+
+        for failure_status in ["extraction_failed", "configuration_error"]:
+            res = ScenarioEvaluationResult(
+                scenario_id="SCEN-FAIL-SAFE",
+                title="Safety Test",
+                expected_status="compliant",
+                predicted_status=failure_status,
+                status_matched=False,
+                expected_requires_human_review=False,
+                predicted_requires_human_review=True,
+                human_review_matched=False,
+                is_unsafe_pass=False,
+                is_false_compliant=False,
+                processing_status="error",
+                error_type="ExtractionInvalidRequestError",
+                error_message="Provider rejected request",
+            )
+            self.assertNotEqual(res.predicted_status, "compliant")
+            self.assertEqual(res.processing_status, "error")
+            self.assertFalse(res.status_matched)
+            self.assertFalse(res.is_false_compliant)
+            self.assertFalse(res.is_unsafe_pass)
+            self.assertTrue(res.predicted_requires_human_review)
+
+
 if __name__ == "__main__":
     unittest.main()

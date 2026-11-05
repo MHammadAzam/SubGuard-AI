@@ -494,6 +494,7 @@ def run_single_scenario(
         # 1. Inspect each document in the scenario
         doc_sets: List[ExtractedDocumentSet] = []
         doc_types_submitted: List[DocumentType] = []
+        pipeline_errors: List[str] = []
 
         for doc_gt in scenario.documents:
             pdf_path = scen_dir / doc_gt.filename
@@ -521,6 +522,29 @@ def run_single_scenario(
             )
             if pipeline_res.document_set:
                 doc_sets.append(pipeline_res.document_set)
+            elif pipeline_res.errors or pipeline_res.error_message:
+                pipeline_errors.extend(pipeline_res.errors or [pipeline_res.error_message])
+
+        # If all documents in the scenario failed extraction due to pipeline/provider errors,
+        # fail the scenario explicitly rather than evaluating compliance on empty documents.
+        if not doc_sets and pipeline_errors:
+            elapsed = round(time.time() - start_time, 3)
+            return ScenarioEvaluationResult(
+                scenario_id=scen_id,
+                title=scenario.title,
+                expected_status=scenario.expected_overall_status.value,
+                predicted_status="configuration_error" if any("key" in e.lower() or "configuration" in e.lower() for e in pipeline_errors) else "extraction_failed",
+                status_matched=False,
+                expected_requires_human_review=scenario.expected_requires_human_review,
+                predicted_requires_human_review=True,
+                human_review_matched=False,
+                is_unsafe_pass=False,
+                is_false_compliant=False,
+                processing_status="error",
+                error_type="ExtractionProviderFailure",
+                error_message="; ".join(pipeline_errors),
+                execution_time_seconds=elapsed,
+            )
 
         # 2. Assemble composite ExtractedDocumentSet
         combined_coverages: List[CoverageExtraction] = []

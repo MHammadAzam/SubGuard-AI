@@ -640,6 +640,9 @@ def execute_cohort_benchmark(
     output_dir: Path,
     scenario_filter: Optional[str] = None,
     report_filename_prefix: Optional[str] = None,
+    provider_name: str = "mock",
+    model_name: Optional[str] = None,
+    extraction_provider: Optional[BaseExtractionProvider] = None,
 ) -> ScenarioBenchmarkReport:
     """Run full benchmark cohort, record metrics, and generate output reports."""
     start_total_time = time.time()
@@ -672,10 +675,21 @@ def execute_cohort_benchmark(
 
     # 3. Setup pipeline and evaluator
     fixtures_dir = manifest_path.parent.parent / "fixtures"
-    mock_provider = ScenarioBenchmarkMockProvider()
+
+    if extraction_provider is not None:
+        active_provider = extraction_provider
+    elif provider_name == "openrouter":
+        from app.extraction.providers import get_extraction_provider
+        active_provider = get_extraction_provider("openrouter", model_name=model_name)
+    else:
+        active_provider = ScenarioBenchmarkMockProvider()
+
+    provider_label = active_provider.provider_name
+    model_label = getattr(active_provider, "model_name", active_provider.__class__.__name__)
+
     ocr_provider = MockOCRProvider()
     pipeline_service = ExtractionPipelineService(
-        extraction_provider=mock_provider,
+        extraction_provider=active_provider,
         ocr_provider=ocr_provider,
     )
     pdf_processor = PDFProcessor()
@@ -751,8 +765,8 @@ def execute_cohort_benchmark(
         timestamp=now_iso,
         manifest_version=manifest_version,
         manifest_hash=manifest_hash,
-        provider_name="mock",
-        model_name="ScenarioBenchmarkMockProvider",
+        provider_name=provider_label,
+        model_name=model_label,
         total_scenarios=len(scenarios),
         successful_scenarios=successful_count,
         failed_scenarios=failed_count,
@@ -951,6 +965,19 @@ def main() -> None:
         default=None,
         help="Optional prefix/name for generated reports, e.g. audit_report_cohort_v1.0.0",
     )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default="mock",
+        choices=["mock", "openrouter"],
+        help="Extraction provider to use: 'mock' (default) or 'openrouter'",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Explicit model name for live provider (e.g. nvidia/nemotron-3.5-super-vl:free)",
+    )
     args = parser.parse_args()
 
     execute_cohort_benchmark(
@@ -959,6 +986,8 @@ def main() -> None:
         output_dir=args.output_dir,
         scenario_filter=args.scenario,
         report_filename_prefix=args.report_prefix,
+        provider_name=args.provider,
+        model_name=args.model,
     )
 
 

@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 from app.extraction.pipeline import ExtractionPipelineService
 from app.extraction.providers.base import (
     ExtractionConfigurationError,
+    ExtractionInvalidRequestError,
     ExtractionProviderError,
     ExtractionRateLimitError,
     ExtractionSchemaValidationError,
@@ -35,6 +36,7 @@ from app.extraction.providers.mock import MockExtractionProvider
 from app.extraction.providers.openrouter import (
     OPENROUTER_SYSTEM_PROMPT,
     OpenRouterExtractionProvider,
+    extract_http_error_details,
 )
 from app.schemas.insurance import CoverageType, DocumentType, ExtractionStatus
 from app.schemas.pdf import PDFDocumentInspection, PDFPageInspection, PDFTextSpan
@@ -114,8 +116,9 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
         self.assertEqual(messages[0]["content"], OPENROUTER_SYSTEM_PROMPT)
 
         user_content = messages[1]["content"]
-        self.assertIn("=== PAGE 1", user_content[0]["text"])
-        self.assertIn("Apex Electrical Contractors LLC", user_content[0]["text"])
+        self.assertIsInstance(user_content, str)
+        self.assertIn("=== PAGE 1", user_content)
+        self.assertIn("Apex Electrical Contractors LLC", user_content)
 
         # Verify parsed schema
         self.assertEqual(result.named_insured.name, "Apex Electrical Contractors LLC")
@@ -596,7 +599,7 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
 
         mock_client.chat.completions.create.side_effect = [err400, success_response]
 
-        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, allow_response_format_fallback=True)
         page = _make_dummy_page(1, "Text on page")
         res = provider.extract_insurance_data("DOC-COMPAT", [page])
 
@@ -683,7 +686,7 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
 
         mock_client.chat.completions.create.side_effect = err400
 
-        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, max_retries=3)
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, max_retries=3, allow_response_format_fallback=True)
         page = _make_dummy_page(1, "Text on page")
 
         with self.assertRaises(ExtractionInvalidRequestError) as ctx:
@@ -707,7 +710,7 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
 
         mock_client.chat.completions.create.side_effect = [err_rf, err_second]
 
-        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, max_retries=3)
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, max_retries=3, allow_response_format_fallback=True)
         page = _make_dummy_page(1, "Text on page")
 
         with self.assertRaises(ExtractionInvalidRequestError):
@@ -730,7 +733,7 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
         non_json_response = _make_mock_chat_completion("Sorry, I cannot return JSON formatted data.")
         mock_client.chat.completions.create.side_effect = [err_rf, non_json_response]
 
-        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, allow_response_format_fallback=True)
         page = _make_dummy_page(1, "Text on page")
 
         with self.assertRaises(ExtractionSchemaValidationError) as ctx:
@@ -1232,6 +1235,221 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
         self.assertEqual(res.insurers, ["Travelers Indemnity Co"])
         self.assertEqual(res.description_of_operations, "Project: Commercial Tower Framing and Drywall")
         self.assertEqual(res.coverages[0].each_occurrence, "$1,000,000")
+
+    def test_task1_extract_http_error_details_reproduces_openai_sdk_behavior(self):
+        """Task 1: str(exc) returning 'Error code: 400' is unpacked from exc.body."""
+        class MockBadRequest(Exception):
+            def __init__(self):
+                super().__init__("Error code: 400")
+                self.status_code = 400
+                self.request_id = "req-12345"
+                self.body = {
+                    "error": {
+                        "message": "Invalid request: parameter 'response_format' is not supported by model",
+                        "type": "invalid_request_error",
+                        "code": "unsupported_parameter",
+                        "param": "response_format",
+                    }
+                }
+
+        exc = MockBadRequest()
+        self.assertEqual(str(exc), "Error code: 400")
+
+        details = extract_http_error_details(exc)
+        self.assertEqual(details["status_code"], 400)
+        self.assertEqual(details["message"], "Invalid request: parameter 'response_format' is not supported by model")
+        self.assertEqual(details["error_type"], "invalid_request_error")
+        self.assertEqual(details["error_code"], "unsupported_parameter")
+        self.assertEqual(details["error_param"], "response_format")
+        self.assertEqual(details["request_id"], "req-12345")
+
+    def test_task1_extract_http_error_details_fallbacks_and_safe_types(self):
+        """Task 1: Safe handling of non-dict, missing, and empty body formats."""
+        # 1. No body -> fallback to str(exc)
+        exc_no_body = Exception("Connection closed by peer")
+        details1 = extract_http_error_details(exc_no_body)
+        self.assertEqual(details1["message"], "Connection closed by peer")
+        self.assertIsNone(details1["status_code"])
+
+        # 2. String body
+        exc_str_body = Exception("Error code: 502")
+        exc_str_body.status_code = 502
+        exc_str_body.body = "<html>Bad Gateway</html>"
+        details2 = extract_http_error_details(exc_str_body)
+        self.assertEqual(details2["message"], "<html>Bad Gateway</html>")
+        self.assertEqual(details2["status_code"], 502)
+
+        # 3. Dict body with direct message key
+        exc_direct_msg = Exception("Error code: 400")
+        exc_direct_msg.status_code = 400
+        exc_direct_msg.body = {"message": "Direct error message"}
+        details3 = extract_http_error_details(exc_direct_msg)
+        self.assertEqual(details3["message"], "Direct error message")
+
+        # 4. Dict body with error as string
+        exc_err_str = Exception("Error code: 400")
+        exc_err_str.status_code = 400
+        exc_err_str.body = {"error": "String error message"}
+        details4 = extract_http_error_details(exc_err_str)
+        self.assertEqual(details4["message"], "String error message")
+
+    def test_task1_extract_http_error_details_redacts_credentials(self):
+        """Task 1: Secrets in error messages or body are strictly redacted."""
+        exc = Exception("Failed with key sk-or-v1-abcdef1234567890abcdef1234567890")
+        exc.status_code = 401
+        exc.body = {
+            "error": {
+                "message": "Invalid token: Bearer sk-1234567890abcdef1234567890",
+                "param": "api_key=sk-or-v1-secretkey1234567890123456",
+            }
+        }
+        details = extract_http_error_details(exc)
+        self.assertNotIn("sk-or-v1-abcdef1234567890abcdef1234567890", details["message"])
+        self.assertNotIn("sk-1234567890abcdef1234567890", details["message"])
+        self.assertIn("[REDACTED_API_KEY]", details["message"])
+        self.assertNotIn("sk-or-v1-secretkey1234567890123456", details["error_param"])
+        self.assertIn("[REDACTED_API_KEY]", details["error_param"])
+
+    def test_task1_extract_insurance_data_unpacks_error_body_into_exception(self):
+        """Task 1: extract_insurance_data preserves body error message instead of 'Error code: 400'."""
+        mock_client = MagicMock()
+        mock_err = Exception("Error code: 400")
+        mock_err.status_code = 400
+        mock_err.body = {"error": {"message": "Specific model constraint violation: prompt exceeds limit"}}
+        mock_client.chat.completions.create.side_effect = mock_err
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, max_retries=1)
+        page = _make_dummy_page(1, "Text")
+
+        with self.assertRaises(ExtractionInvalidRequestError) as ctx:
+            provider.extract_insurance_data("DOC-ERR", [page])
+
+        self.assertIn("Specific model constraint violation: prompt exceeds limit", str(ctx.exception))
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_task2_text_only_request_sends_plain_string(self):
+        """Task 2: When image_count == 0, user message content is a plain string, not a list."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion('{"document_type": "coi"}')
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        page1 = _make_dummy_page(1, "Policy page 1 text", image_bytes=None)
+        page2 = _make_dummy_page(2, "Policy page 2 text", image_bytes=None)
+
+        provider.extract_insurance_data("DOC-TEXT-ONLY", [page1, page2])
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        messages = call_kwargs["messages"]
+        user_content = messages[1]["content"]
+
+        # Content must be a plain string
+        self.assertIsInstance(user_content, str)
+        self.assertNotIsInstance(user_content, list)
+        self.assertIn("=== PAGE 1", user_content)
+        self.assertIn("Policy page 1 text", user_content)
+        self.assertIn("=== PAGE 2", user_content)
+        self.assertIn("Policy page 2 text", user_content)
+
+    def test_task2_multimodal_request_preserves_content_array_with_images(self):
+        """Task 2: When images are present, user message content is a multimodal list with image_url."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_mock_chat_completion('{"document_type": "coi"}')
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        fake_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRimagedata"
+        page = _make_dummy_page(1, "Page with image", image_bytes=fake_png)
+
+        provider.extract_insurance_data("DOC-MULTI", [page])
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        user_content = call_kwargs["messages"][1]["content"]
+
+        self.assertIsInstance(user_content, list)
+        types = [part["type"] for part in user_content]
+        self.assertIn("text", types)
+        self.assertIn("image_url", types)
+
+        img_part = next(p for p in user_content if p["type"] == "image_url")
+        self.assertTrue(img_part["image_url"]["url"].startswith("data:image/png;base64,"))
+
+    def test_task3_is_response_format_error_positives(self):
+        """Task 3: Correctly identifies errors specifically related to response_format or JSON mode."""
+        # 1. Parameter field points to response_format
+        exc1 = Exception("Error code: 400")
+        details1 = {"error_param": "response_format", "message": "Invalid parameter"}
+        self.assertTrue(OpenRouterExtractionProvider.is_response_format_error(exc1, details1))
+
+        # 2. Message mentions response_format is not supported
+        exc2 = Exception("Error code: 400")
+        details2 = {"message": "Parameter 'response_format' is not supported by this model"}
+        self.assertTrue(OpenRouterExtractionProvider.is_response_format_error(exc2, details2))
+
+        # 3. Message mentions json_object mode not supported
+        exc3 = Exception("Error code: 400")
+        details3 = {"message": "Model does not support json_object mode"}
+        self.assertTrue(OpenRouterExtractionProvider.is_response_format_error(exc3, details3))
+
+        # 4. Message mentions unsupported format: json_schema
+        exc4 = Exception("Error code: 400")
+        details4 = {"message": "Unsupported format: json_schema"}
+        self.assertTrue(OpenRouterExtractionProvider.is_response_format_error(exc4, details4))
+
+        # 5. Error code specifies unsupported_response_format
+        exc5 = Exception("Error code: 400")
+        details5 = {"error_code": "unsupported_response_format", "message": "Failed"}
+        self.assertTrue(OpenRouterExtractionProvider.is_response_format_error(exc5, details5))
+
+    def test_task3_is_response_format_error_negatives(self):
+        """Task 3: Unrelated HTTP 400 errors are NOT classified as response_format errors."""
+        # 1. Temperature parameter
+        exc1 = Exception("Error code: 400")
+        details1 = {"error_param": "temperature", "message": "temperature must be between 0 and 2"}
+        self.assertFalse(OpenRouterExtractionProvider.is_response_format_error(exc1, details1))
+
+        # 2. Context length
+        exc2 = Exception("Error code: 400")
+        details2 = {"message": "Context length exceeded: prompt contains 50000 tokens but model max is 4096"}
+        self.assertFalse(OpenRouterExtractionProvider.is_response_format_error(exc2, details2))
+
+        # 3. Missing parameter
+        exc3 = Exception("Error code: 400")
+        details3 = {"message": "Missing required parameter: 'messages'"}
+        self.assertFalse(OpenRouterExtractionProvider.is_response_format_error(exc3, details3))
+
+        # 4. Model not found
+        exc4 = Exception("Error code: 404")
+        details4 = {"message": "Model 'foo/bar' not found"}
+        self.assertFalse(OpenRouterExtractionProvider.is_response_format_error(exc4, details4))
+
+        # 5. General JSON decode error in request body
+        exc5 = Exception("Error code: 400")
+        details5 = {"message": "Could not parse JSON body in HTTP request"}
+        self.assertFalse(OpenRouterExtractionProvider.is_response_format_error(exc5, details5))
+
+    def test_task3_response_format_error_does_not_silently_retry(self):
+        """Task 3: Unsupported response_format raises ExtractionInvalidRequestError with 0 extra retry calls."""
+        mock_client = MagicMock()
+        mock_err = Exception("Error code: 400")
+        mock_err.status_code = 400
+        mock_err.body = {
+            "error": {
+                "message": "Model 'nvidia/nemotron-3.5-super-vl:free' does not support response_format: json_object",
+                "param": "response_format",
+            }
+        }
+        mock_client.chat.completions.create.side_effect = mock_err
+
+        # Default allow_response_format_fallback is False; response_format errors fail immediately
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, max_retries=3)
+        page = _make_dummy_page(1, "Text")
+
+        with self.assertRaises(ExtractionInvalidRequestError) as ctx:
+            provider.extract_insurance_data("DOC-RESP-FMT", [page])
+
+        self.assertEqual(ctx.exception.error_code, "unsupported_response_format")
+        self.assertIn("does not support response_format", str(ctx.exception))
+        # Exactly one call must be made; NO silent fallback or secondary call
+        self.assertEqual(mock_client.chat.completions.create.call_count, 1)
 
 
 if __name__ == "__main__":

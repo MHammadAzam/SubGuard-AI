@@ -666,6 +666,7 @@ def execute_cohort_benchmark(
     report_filename_prefix: Optional[str] = None,
     provider_name: str = "mock",
     model_name: Optional[str] = None,
+    max_retries: int = 3,
     extraction_provider: Optional[BaseExtractionProvider] = None,
 ) -> ScenarioBenchmarkReport:
     """Run full benchmark cohort, record metrics, and generate output reports."""
@@ -704,7 +705,7 @@ def execute_cohort_benchmark(
         active_provider = extraction_provider
     elif provider_name == "openrouter":
         from app.extraction.providers import get_extraction_provider
-        active_provider = get_extraction_provider("openrouter", model_name=model_name)
+        active_provider = get_extraction_provider("openrouter", model_name=model_name, max_retries=max_retries)
     else:
         active_provider = ScenarioBenchmarkMockProvider()
 
@@ -1002,6 +1003,12 @@ def main() -> None:
         default=None,
         help="Explicit model name for live provider (e.g. nvidia/nemotron-3.5-super-vl:free)",
     )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        help="Maximum attempts per document (default: 3; set 1 to disable retries)",
+    )
     args = parser.parse_args()
 
     execute_cohort_benchmark(
@@ -1012,6 +1019,7 @@ def main() -> None:
         report_filename_prefix=args.report_prefix,
         provider_name=args.provider,
         model_name=args.model,
+        max_retries=args.max_retries,
     )
 
 

@@ -23,6 +23,7 @@ def get_extraction_provider(
     provider_name: Optional[str] = None,
     api_key: Optional[str] = None,
     model_name: Optional[str] = None,
+    max_retries: int = 3,
 ) -> BaseExtractionProvider:
     """Factory to retrieve the configured extraction provider."""
     name = (provider_name or os.getenv("EXTRACTION_PROVIDER", "mock")).strip().lower()
@@ -32,7 +33,11 @@ def get_extraction_provider(
     elif name == "gemini":
         return GeminiExtractionProvider(api_key=api_key, model_name=model_name or "gemini-2.0-flash")
     elif name == "openrouter":
-        return OpenRouterExtractionProvider(api_key=api_key, model_name=model_name or "nvidia/nemotron-3.5-super-vl:free")
+        return OpenRouterExtractionProvider(
+            api_key=api_key,
+            model_name=model_name or "nvidia/nemotron-3.5-super-vl:free",
+            max_retries=max_retries,
+        )
     else:
         raise ValueError(f"Unsupported extraction provider: '{name}'. Supported: 'mock', 'gemini', 'openrouter'.")
 

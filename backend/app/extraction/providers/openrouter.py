@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from app.extraction.providers.base import (
     BaseExtractionProvider,
@@ -47,6 +47,58 @@ def _format_pydantic_validation_error(val_err: Exception) -> str:
         except Exception:
             pass
     return "Schema validation failed against RawInsuranceExtraction contract."
+
+
+def extract_http_error_details(exc: Exception) -> Dict[str, Any]:
+    """Extract structured details from an SDK/HTTP exception safely without leaking credentials."""
+    details: Dict[str, Any] = {
+        "status_code": getattr(exc, "status_code", None),
+        "message": None,
+        "error_type": None,
+        "error_code": getattr(exc, "code", None),
+        "error_param": None,
+        "request_id": getattr(exc, "request_id", None),
+    }
+
+    if details["status_code"] is None and hasattr(exc, "response") and hasattr(exc.response, "status_code"):
+        details["status_code"] = getattr(exc.response, "status_code", None)
+
+    if details["request_id"] is None and hasattr(exc, "response") and hasattr(exc.response, "headers"):
+        try:
+            details["request_id"] = exc.response.headers.get("x-request-id")
+        except Exception:
+            pass
+
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err_obj = body.get("error")
+        if isinstance(err_obj, dict):
+            details["message"] = err_obj.get("message")
+            details["error_type"] = err_obj.get("type")
+            details["error_code"] = err_obj.get("code") or details["error_code"]
+            details["error_param"] = err_obj.get("param")
+        elif isinstance(err_obj, str) and err_obj.strip():
+            details["message"] = err_obj.strip()
+        elif "message" in body and isinstance(body["message"], str) and body["message"].strip():
+            details["message"] = body["message"].strip()
+    elif isinstance(body, str) and body.strip():
+        details["message"] = body.strip()
+
+    raw_msg = details["message"]
+    if not raw_msg or not str(raw_msg).strip():
+        raw_msg = str(exc)
+    else:
+        raw_msg = str(raw_msg).strip()
+
+    details["message"] = sanitize_error_message(raw_msg)
+    if details["error_type"]:
+        details["error_type"] = sanitize_error_message(str(details["error_type"]))
+    if details["error_code"]:
+        details["error_code"] = sanitize_error_message(str(details["error_code"]))
+    if details["error_param"]:
+        details["error_param"] = sanitize_error_message(str(details["error_param"]))
+
+    return details
 
 
 OPENROUTER_SYSTEM_PROMPT = """You are an expert insurance document extraction engine for Certificates of Insurance (COI / ACORD 25) and endorsements.
@@ -166,6 +218,7 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
         base_url: Optional[str] = None,
         max_retries: int = 3,
         client: Optional[Any] = None,
+        allow_response_format_fallback: bool = False,
     ):
         self._api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         chosen_model = model_name or self.DEFAULT_MODEL
@@ -177,8 +230,15 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
             )
         self.model_name = chosen_model
         self.base_url = base_url or self.DEFAULT_BASE_URL
-        self.max_retries = max_retries
+        env_retries = os.getenv("EXTRACTION_MAX_RETRIES")
+        if env_retries is not None:
+            try:
+                max_retries = int(env_retries)
+            except ValueError:
+                pass
+        self.max_retries = max(1, max_retries)
         self._injected_client = client
+        self.allow_response_format_fallback = allow_response_format_fallback
 
     @staticmethod
     def is_free_model(model: Optional[str]) -> bool:
@@ -221,21 +281,94 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
                 provider_name=self.provider_name,
             ) from exc
 
-    def _build_user_content(self, pages: List[PDFPageInspection]) -> List[Dict[str, Any]]:
-        """Assemble multimodal content parts combining text layers, page boundaries, and raster images."""
+    @staticmethod
+    def is_response_format_error(exc: Exception, details: Optional[Dict[str, Any]] = None) -> bool:
+        """Identify whether an exception represents an unsupported response_format/JSON-mode rejection.
+        
+        Inspects structured body fields (error_param, error_code, message) and exception text.
+        Avoids classifying unrelated HTTP 400 errors (e.g. invalid credentials, context length,
+        general JSON decode/schema errors, missing messages, etc.) as response_format errors.
+        """
+        if details is None:
+            details = extract_http_error_details(exc)
+
+        param = (details.get("error_param") or "").lower()
+        if param in ("response_format", "response_format.type", "response_format.json_schema"):
+            return True
+
+        err_code = (details.get("error_code") or "").lower()
+        if err_code in ("unsupported_response_format", "invalid_response_format", "response_format_not_supported"):
+            return True
+
+        msg = (details.get("message") or "").lower()
+        exc_str = str(exc).lower()
+        combined_text = f"{msg} {exc_str}"
+
+        format_indicators = [
+            "response_format",
+            "json_object",
+            "json mode",
+            "json_mode",
+            "json_schema",
+            "structured_outputs",
+            "structured outputs",
+        ]
+        rejection_indicators = [
+            "not supported",
+            "unsupported",
+            "not available",
+            "disabled",
+            "invalid parameter",
+            "unrecognized parameter",
+            "unknown parameter",
+            "unexpected parameter",
+            "does not support",
+            "is not supported",
+            "rejected",
+        ]
+
+        for fi in format_indicators:
+            if fi in combined_text:
+                for ri in rejection_indicators:
+                    if ri in combined_text:
+                        return True
+
+        explicit_phrases = [
+            "unsupported format",
+            "format is not supported",
+            "schema is not supported",
+            "json-mode is not supported",
+            "json schema not supported",
+            "response_format is not allowed",
+        ]
+        for phrase in explicit_phrases:
+            if phrase in combined_text:
+                return True
+
+        return False
+
+    def _build_user_content(self, pages: List[PDFPageInspection]) -> Union[str, List[Dict[str, Any]]]:
+        """Assemble user message content.
+        
+        When raster images are present, returns a multimodal content array with text
+        and base64 image_url objects.
+        When text-only (image_count == 0), returns a single plain string to ensure
+        broad compatibility across OpenAI-compatible text and vision endpoints.
+        """
         content_parts: List[Dict[str, Any]] = []
+        text_parts: List[str] = []
         image_count = 0
 
         for p in pages:
-            # Add text representation with explicit 1-indexed page boundaries
             page_text = p.text_content or "(No text layer found on this page)"
             header = f"=== PAGE {p.page_number} (Dimensions: {p.width_pts}x{p.height_pts} pt) ===\n"
+            full_page_str = header + page_text
+            text_parts.append(full_page_str)
             content_parts.append({
                 "type": "text",
-                "text": header + page_text,
+                "text": full_page_str,
             })
 
-            # If page raster image bytes are available, attach as base64 image_url part
             image_data = getattr(p, "rendered_image_png", None) or getattr(p, "image_bytes", None)
             if image_data:
                 try:
@@ -252,10 +385,10 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
 
         if image_count > 0:
             logger.info("OpenRouter payload constructed with %d pages and %d raster images.", len(pages), image_count)
+            return content_parts
         else:
-            logger.info("OpenRouter payload constructed with %d pages (text-only, no raster images).", len(pages))
-
-        return content_parts
+            logger.info("OpenRouter payload constructed with %d pages (text-only string format).", len(pages))
+            return "\n\n".join(text_parts)
 
     def _clean_json_text(self, text: str) -> str:
         """Strip markdown code block fences and trailing text if present."""
@@ -354,49 +487,32 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
 
             except Exception as exc:
                 last_error = exc
-                err_msg = str(exc)
-                err_lower = err_msg.lower()
+                details = extract_http_error_details(exc)
+                status_code = details["status_code"]
+                error_code = details["error_code"]
+                request_id = details["request_id"]
+                server_msg = details["message"]
+                err_lower = f"{server_msg} {str(exc)}".lower()
 
-                # Extract structured status_code from SDK exception
-                status_code: Optional[int] = getattr(exc, "status_code", None)
-                if status_code is None and hasattr(exc, "response") and hasattr(exc.response, "status_code"):
-                    status_code = getattr(exc.response, "status_code", None)
-
-                # Extract structured error_code
-                error_code: Optional[str] = getattr(exc, "code", None)
-                if error_code is None and hasattr(exc, "body") and isinstance(exc.body, dict):
-                    err_obj = exc.body.get("error")
-                    if isinstance(err_obj, dict):
-                        error_code = str(err_obj.get("code") or err_obj.get("type") or "")
-                        if not error_code:
-                            error_code = None
-
-                # Extract request_id if available
-                request_id: Optional[str] = getattr(exc, "request_id", None)
-                if request_id is None and hasattr(exc, "response") and hasattr(exc.response, "headers"):
-                    try:
-                        request_id = exc.response.headers.get("x-request-id")
-                    except Exception:
-                        request_id = None
-
-                # Compatibility fix: if model rejects response_format, retry request without it
-                is_response_format_error = (
-                    "response_format" in err_lower
-                    or "json_object" in err_lower
-                    or ("unsupported" in err_lower and "format" in err_lower)
-                )
-                if use_response_format and (
-                    (status_code == 400 and is_response_format_error)
-                    or ("response_format" in err_lower and ("not supported" in err_lower or "unsupported" in err_lower))
-                ):
-                    logger.info("Model '%s' rejected response_format; retrying without response_format option.", self.model_name)
-                    use_response_format = False
-                    continue
+                # Check if error is specifically an unsupported response_format / JSON-mode error
+                is_resp_format_err = self.is_response_format_error(exc, details)
+                if is_resp_format_err:
+                    if self.allow_response_format_fallback and use_response_format and attempt < self.max_retries:
+                        logger.info("Model '%s' rejected response_format; retrying without response_format option.", self.model_name)
+                        use_response_format = False
+                        continue
+                    raise ExtractionInvalidRequestError(
+                        f"OpenRouter invalid request/model error (HTTP {status_code or 400}): model '{self.model_name}' does not support response_format/JSON mode: {server_msg}",
+                        provider_name=self.provider_name,
+                        status_code=status_code or 400,
+                        error_code="unsupported_response_format",
+                        request_id=request_id,
+                    ) from exc
 
                 # 1. Authentication failure (401)
                 if status_code == 401 or "unauthorized" in err_lower or "invalid api key" in err_lower:
                     raise ExtractionAuthenticationError(
-                        f"OpenRouter authentication failed (401): {exc}",
+                        f"OpenRouter authentication failed (401): {server_msg}",
                         provider_name=self.provider_name,
                         status_code=401,
                         error_code=error_code or "unauthorized",
@@ -410,7 +526,7 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
                         backoff_seconds *= 2.0
                         continue
                     raise ExtractionRateLimitError(
-                        f"OpenRouter rate limit exceeded after {self.max_retries} attempts: {exc}",
+                        f"OpenRouter rate limit exceeded after {self.max_retries} attempts: {server_msg}",
                         provider_name=self.provider_name,
                         status_code=429,
                         error_code=error_code or "rate_limit_exceeded",
@@ -424,7 +540,7 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
                         backoff_seconds *= 2.0
                         continue
                     raise ExtractionTimeoutError(
-                        f"OpenRouter request timed out after {attempt} attempts: {exc}",
+                        f"OpenRouter request timed out after {attempt} attempts: {server_msg}",
                         provider_name=self.provider_name,
                         status_code=status_code or 408,
                         error_code=error_code or "timeout",
@@ -438,7 +554,7 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
                         backoff_seconds *= 2.0
                         continue
                     raise ExtractionProviderError(
-                        f"OpenRouter extraction failed after {self.max_retries} attempts: {exc}",
+                        f"OpenRouter extraction failed after {self.max_retries} attempts: {server_msg}",
                         provider_name=self.provider_name,
                         is_retryable=False,
                         status_code=status_code or 503,
@@ -447,18 +563,20 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
                     ) from exc
 
                 # 5. Invalid request / model capability (HTTP 400, 404, 422) - non-retryable
-                if status_code in (400, 404, 422) or "not found" in err_lower or "invalid request" in err_lower:
+                if status_code in (400, 404, 422) or "not found" in err_lower or "invalid request" in err_lower or is_resp_format_err:
+                    formatted_err = f"OpenRouter invalid request/model error (HTTP {status_code or 400}): {server_msg}"
+                    code_to_report = "unsupported_response_format" if is_resp_format_err else (error_code or f"http_{status_code or 400}")
                     raise ExtractionInvalidRequestError(
-                        f"OpenRouter invalid request/model error: {exc}",
+                        formatted_err,
                         provider_name=self.provider_name,
                         status_code=status_code or 400,
-                        error_code=error_code or (f"http_{status_code}" if status_code else "invalid_request"),
+                        error_code=code_to_report,
                         request_id=request_id,
                     ) from exc
 
                 # 6. Any other permanent provider error
                 raise ExtractionProviderError(
-                    f"OpenRouter API call failed on attempt {attempt}: {exc}",
+                    f"OpenRouter API call failed on attempt {attempt}: {server_msg}",
                     provider_name=self.provider_name,
                     is_retryable=False,
                     status_code=status_code,
@@ -471,3 +589,10 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
             provider_name=self.provider_name,
             is_retryable=False,
         ) from last_error
+
+
+__all__ = [
+    "OpenRouterExtractionProvider",
+    "OPENROUTER_SYSTEM_PROMPT",
+    "extract_http_error_details",
+]

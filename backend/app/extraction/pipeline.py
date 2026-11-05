@@ -432,10 +432,16 @@ class ExtractionPipelineService:
                 else:
                     category = "provider_error"
 
+            prov_name = self.extraction_provider.provider_name
+            if clean_msg.lower().startswith(prov_name.lower()) or "ai extraction provider" in clean_msg.lower():
+                err_line = clean_msg
+            else:
+                err_line = f"AI extraction provider '{prov_name}' failed: {clean_msg}"
+
             return ExtractionPipelineResult(
                 document_set=None,
                 processing_status=DocumentProcessingStatus.FAILED,
-                errors=[f"AI extraction provider '{self.extraction_provider.provider_name}' failed: {clean_msg}"],
+                errors=[err_line],
                 error_category=category,
                 error_type=exc_type,
                 error_message=clean_msg,

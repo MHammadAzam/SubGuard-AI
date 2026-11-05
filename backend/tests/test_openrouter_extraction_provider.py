@@ -1751,5 +1751,288 @@ class Phase7325ErrorObservabilityTests(unittest.TestCase):
             self.assertTrue(res.predicted_requires_human_review)
 
 
+class Phase7326ExceptionChainTests(unittest.TestCase):
+    """Offline regression tests for Phase 7.3.2.6 exception chain investigation."""
+
+    def test_1_populated_body_error(self):
+        """1. Populated body['error'] extracted accurately."""
+        err = Exception("Error code: 400")
+        err.status_code = 400
+        err.body = {
+            "error": {
+                "message": "Invalid model parameter",
+                "type": "invalid_request_error",
+                "code": "invalid_param",
+                "param": "model",
+            }
+        }
+        details = extract_http_error_details(err)
+        self.assertEqual(details["message"], "Invalid model parameter")
+        self.assertEqual(details["status_code"], 400)
+        self.assertEqual(details["error_type"], "invalid_request_error")
+        self.assertEqual(details["error_code"], "invalid_param")
+        self.assertEqual(details["error_param"], "model")
+
+    def test_2_plain_text_response_body(self):
+        """2. Plain text response body preserved."""
+        err = Exception("Error code: 502")
+        err.status_code = 502
+        err.body = "Bad Gateway: upstream connect error or disconnect/reset before headers"
+        details = extract_http_error_details(err)
+        self.assertEqual(details["status_code"], 502)
+        self.assertIn("Bad Gateway", details["message"])
+
+    def test_3_raw_json_in_response_text_or_content(self):
+        """3. Raw JSON in response.text or response.content parsed when body is absent."""
+        mock_resp = MagicMock()
+        mock_resp.text = json.dumps({"error": {"message": "Model not available"}})
+        mock_resp.headers = {"x-request-id": "req-json-123"}
+        err = Exception("Error code: 404")
+        err.status_code = 404
+        err.body = None
+        err.response = mock_resp
+
+        details = extract_http_error_details(err)
+        self.assertEqual(details["message"], "Model not available")
+        self.assertEqual(details["status_code"], 404)
+        self.assertEqual(details["request_id"], "req-json-123")
+
+        # Test with raw bytes in response.content
+        mock_resp_bytes = MagicMock()
+        mock_resp_bytes.text = ""
+        mock_resp_bytes.content = json.dumps({"error": {"message": "Content byte message"}}).encode("utf-8")
+        mock_resp_bytes.headers = {}
+        err2 = Exception("Error code: 400")
+        err2.body = None
+        err2.response = mock_resp_bytes
+        details2 = extract_http_error_details(err2)
+        self.assertEqual(details2["message"], "Content byte message")
+
+    def test_4_unconsumed_streaming_response_read(self):
+        """4. Unconsumed/streaming response calls .read() safely."""
+        mock_resp = MagicMock()
+        mock_resp.is_stream_consumed = False
+        read_called = [False]
+
+        def fake_read():
+            read_called[0] = True
+            mock_resp.is_stream_consumed = True
+            return b'{"error": {"message": "Streamed error detail"}}'
+
+        mock_resp.read = fake_read
+        mock_resp.text = '{"error": {"message": "Streamed error detail"}}'
+        mock_resp.headers = {}
+        err = Exception("Error code: 400")
+        err.response = mock_resp
+        err.body = None
+
+        details = extract_http_error_details(err)
+        self.assertTrue(read_called[0])
+        self.assertEqual(details["message"], "Streamed error detail")
+
+    def test_5_genuinely_empty_response_body(self):
+        """5. Genuinely empty response body ("" / b"") falls back cleanly without crash."""
+        mock_resp = MagicMock()
+        mock_resp.text = ""
+        mock_resp.content = b""
+        mock_resp.headers = {}
+        err = Exception("Error code: 400")
+        err.status_code = 400
+        err.response = mock_resp
+        err.body = None
+
+        details = extract_http_error_details(err)
+        self.assertEqual(details["status_code"], 400)
+        self.assertIsNotNone(details["message"])
+        self.assertIn("400", details["message"])
+
+    def test_6_request_id_extraction_headers(self):
+        """6. Request ID extraction from cf-ray, x-openrouter-request-id, x-request-id, request-id."""
+        for header_name, sample_val in [
+            ("cf-ray", "ray-abc123456"),
+            ("x-openrouter-request-id", "or-req-789"),
+            ("x-request-id", "x-req-001"),
+            ("request-id", "req-002"),
+        ]:
+            mock_resp = MagicMock()
+            mock_resp.text = ""
+            mock_resp.headers = {header_name: sample_val}
+            err = Exception("Error code: 500")
+            err.response = mock_resp
+            err.body = None
+            details = extract_http_error_details(err)
+            self.assertEqual(details["request_id"], sample_val)
+
+    def test_7_exception_chaining_cause(self):
+        """7. Exception chaining (__cause__) preserved when raising domain exceptions."""
+        import openai
+        from app.extraction.providers.openrouter import OpenRouterExtractionProvider
+        from app.extraction.providers.base import ExtractionInvalidRequestError
+
+        mock_client = MagicMock()
+        orig_err = openai.BadRequestError(
+            message="Error code: 400",
+            response=MagicMock(status_code=400, headers={}, text=""),
+            body=None,
+        )
+        mock_client.chat.completions.create.side_effect = orig_err
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+
+        with self.assertRaises(ExtractionInvalidRequestError) as ctx:
+            provider.extract_insurance_data(
+                document_id="doc-1",
+                pages=[PDFPageInspection(page_number=1, text_content="ACORD 25", width_pts=612.0, height_pts=792.0)],
+            )
+        self.assertIs(ctx.exception.__cause__, orig_err)
+
+    def test_8_duplicate_wrapping_prevention(self):
+        """8. Duplicate wrapping prevention in provider and pipeline."""
+        from app.extraction.pipeline import ExtractionPipelineService
+        from app.extraction.providers.base import ExtractionInvalidRequestError
+        from app.schemas.pdf import PDFDocumentInspection, DocumentProcessingStatus
+
+        # Case A: Provider message already includes AI extraction provider prefix
+        provider_msg_a = "AI extraction provider 'openrouter' failed: OpenRouter invalid request (HTTP 400)"
+        mock_provider_a = MagicMock()
+        mock_provider_a.provider_name = "openrouter"
+        mock_provider_a.extract_insurance_data.side_effect = ExtractionInvalidRequestError(
+            provider_msg_a,
+            provider_name="openrouter",
+            status_code=400,
+            error_code="http_400",
+        )
+
+        pipeline_service_a = ExtractionPipelineService(extraction_provider=mock_provider_a)
+        inspection_a = PDFDocumentInspection(
+            document_id="doc1",
+            filename="test.pdf",
+            file_size_bytes=1024,
+            content_hash_sha256="abcd" * 16,
+            classified_type=DocumentType.COI,
+            classification_confidence=1.0,
+            classification_reason="Standard COI",
+            page_count=1,
+            pages=[PDFPageInspection(page_number=1, text_content="ACORD 25", width_pts=612.0, height_pts=792.0)],
+            status=DocumentProcessingStatus.PROCESSED,
+        )
+        result_a = pipeline_service_a.process_inspection(inspection_a, subcontractor_id="SUB-1")
+
+        self.assertEqual(result_a.processing_status, DocumentProcessingStatus.FAILED)
+        self.assertEqual(len(result_a.errors), 1)
+        self.assertEqual(result_a.errors[0].count("AI extraction provider"), 1)
+
+        # Case B: Provider message starts with OpenRouter
+        provider_msg_b = "OpenRouter invalid request/model error (HTTP 400): Schema mismatch"
+        mock_provider_b = MagicMock()
+        mock_provider_b.provider_name = "openrouter"
+        mock_provider_b.extract_insurance_data.side_effect = ExtractionInvalidRequestError(
+            provider_msg_b,
+            provider_name="openrouter",
+            status_code=400,
+            error_code="http_400",
+        )
+        pipeline_service_b = ExtractionPipelineService(extraction_provider=mock_provider_b)
+        result_b = pipeline_service_b.process_inspection(inspection_a, subcontractor_id="SUB-1")
+        self.assertEqual(result_b.errors[0].count("OpenRouter"), 1)
+        self.assertFalse(result_b.errors[0].startswith("AI extraction provider 'openrouter' failed: OpenRouter"))
+
+    def test_9_document_error_deduplication(self):
+        """9. Document error deduplication in scenario runner for multi-document scenarios."""
+        import datetime
+        from pathlib import Path
+        from evaluation.runners.scenario_runner import run_single_scenario
+        from evaluation.schemas.ground_truth import (
+            ScenarioGroundTruth,
+            DocumentGroundTruth,
+            DocumentSourceType,
+        )
+        from app.schemas.insurance import ComplianceStatus
+
+        scenario = ScenarioGroundTruth(
+            scenario_id="SCEN-TEST-DEDUP",
+            title="Deduplication Test",
+            description="Test",
+            subcontractor_id="SUB-1",
+            evaluation_date=datetime.date(2025, 6, 1),
+            document_ids=["DOC1", "DOC2"],
+            documents=[
+                DocumentGroundTruth(
+                    document_id="DOC1",
+                    filename="doc1.pdf",
+                    source_type=DocumentSourceType.SYNTHETIC,
+                    document_type=DocumentType.COI,
+                    page_count=1,
+                ),
+                DocumentGroundTruth(
+                    document_id="DOC2",
+                    filename="doc2.pdf",
+                    source_type=DocumentSourceType.SYNTHETIC,
+                    document_type=DocumentType.ENDORSEMENT,
+                    page_count=1,
+                ),
+            ],
+            requirements=[],
+            expected_findings=[],
+            expected_overall_status=ComplianceStatus.COMPLIANT,
+            expected_requires_human_review=False,
+        )
+
+        mock_pipeline_service = MagicMock()
+        identical_err = "AI extraction provider 'openrouter' failed: OpenRouter invalid request/model error (HTTP 400): Bad Request"
+        mock_fail_result = MagicMock(
+            document_set=None,
+            processing_status="error",
+            errors=[identical_err],
+            error_type="ExtractionInvalidRequestError",
+            status_code=400,
+            error_code="http_400",
+            request_id="ray-123",
+        )
+        mock_pipeline_service.process_inspection.return_value = mock_fail_result
+
+        mock_pdf_processor = MagicMock()
+        mock_pdf_processor.process_pdf.return_value = MagicMock()
+
+        with patch("pathlib.Path.exists", return_value=True), \
+             patch("builtins.open", unittest.mock.mock_open(read_data=b"%PDF-1.4 dummy")):
+            result = run_single_scenario(
+                scenario=scenario,
+                fixtures_dir=Path("/fake/fixtures"),
+                pdf_processor=mock_pdf_processor,
+                pipeline_service=mock_pipeline_service,
+                evaluator=MagicMock(),
+            )
+
+        # The identical error from doc1 and doc2 must not be duplicated
+        self.assertEqual(result.error_message.count("AI extraction provider 'openrouter' failed:"), 1)
+        self.assertEqual(result.error_message, identical_err)
+
+    def test_10_credential_redaction_headers_and_body(self):
+        """10. Credential redaction in header and body fallbacks."""
+        mock_resp = MagicMock()
+        mock_resp.text = "Bearer sk-or-v1-supersecretkey123456789012345678901234"
+        mock_resp.headers = {"x-request-id": "sk-ant-api03-abcdefghijklmn"}
+        err = Exception("Error code: 401 - Bearer sk-proj-123456789012345678901234")
+        err.status_code = 401
+        err.response = mock_resp
+        err.body = None
+
+        details = extract_http_error_details(err)
+        self.assertNotIn("sk-or-v1-supersecretkey123456789012345678901234", details["message"])
+        self.assertNotIn("sk-proj-123456789012345678901234", details["message"])
+        self.assertNotIn("sk-ant-api03-abcdefghijklmn", str(details["request_id"]))
+
+    def test_11_message_truncation_limit(self):
+        """11. Message truncation limit enforced at 1,000 characters."""
+        long_body = "x" * 2500
+        err = Exception(f"Error code: 400 - {long_body}")
+        err.status_code = 400
+        err.body = long_body
+
+        details = extract_http_error_details(err)
+        self.assertLessEqual(len(details["message"]), 1050)
+        self.assertTrue(details["message"].endswith("... [truncated]"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -540,6 +540,9 @@ def run_single_scenario(
             is_config_err = any("key" in e.lower() or "configuration" in e.lower() for e in pipeline_errors)
             pred_status = "configuration_error" if is_config_err else "extraction_failed"
 
+            unique_errors = list(dict.fromkeys(pipeline_errors))
+            combined_error_msg = "; ".join(unique_errors)
+
             return ScenarioEvaluationResult(
                 scenario_id=scen_id,
                 title=scenario.title,
@@ -553,7 +556,7 @@ def run_single_scenario(
                 is_false_compliant=False,
                 processing_status="error",
                 error_type=primary_error_type,
-                error_message="; ".join(pipeline_errors),
+                error_message=combined_error_msg,
                 status_code=primary_status_code,
                 error_code=primary_error_code,
                 request_id=primary_request_id,

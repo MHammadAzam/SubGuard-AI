@@ -1,8 +1,8 @@
 {
-  "benchmark_id": "scenario_bench_996e27f1",
-  "timestamp": "2026-11-03T18:20:34.547755+00:00",
+  "benchmark_id": "phase_7_2_3_5_cohort_run",
+  "timestamp": "2026-11-05T05:45:59.180443+00:00",
   "manifest_version": "cohort_v1.0.0",
-  "manifest_hash": "adf3195e1001c40fc647d6603cb48b757796d3085693c08542b6bfc983f86e12",
+  "manifest_hash": "5e33540a32609019d8fdef1c07f88c27ca811da9edbc56f8927f46136b378a60",
   "provider_name": "mock",
   "model_name": "ScenarioBenchmarkMockProvider",
   "total_scenarios": 40,
@@ -10,10 +10,10 @@
   "failed_scenarios": 0,
   "submission_metrics": {
     "total_scenarios": 40,
-    "exact_status_matches": 27,
-    "overall_accuracy": 0.675,
-    "macro_f1": 0.6649,
-    "weighted_f1": 0.6628,
+    "exact_status_matches": 31,
+    "overall_accuracy": 0.775,
+    "macro_f1": 0.7688,
+    "weighted_f1": 0.789,
     "confusion_matrix_4class": {
       "compliant": {
         "compliant": 10,
@@ -22,15 +22,15 @@
         "unable_to_determine": 0
       },
       "non_compliant": {
-        "compliant": 1,
-        "non_compliant": 6,
+        "compliant": 0,
+        "non_compliant": 7,
         "requires_human_review": 0,
         "unable_to_determine": 3
       },
       "requires_human_review": {
-        "compliant": 3,
+        "compliant": 0,
         "non_compliant": 2,
-        "requires_human_review": 6,
+        "requires_human_review": 9,
         "unable_to_determine": 4
       },
       "unable_to_determine": {
@@ -40,23 +40,60 @@
         "unable_to_determine": 5
       }
     },
+    "confusion_matrix_5class": {
+      "compliant": {
+        "compliant": 10,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 0,
+        "missing_evidence": 0
+      },
+      "non_compliant": {
+        "compliant": 0,
+        "non_compliant": 7,
+        "requires_human_review": 0,
+        "unable_to_determine": 0,
+        "missing_evidence": 3
+      },
+      "requires_human_review": {
+        "compliant": 0,
+        "non_compliant": 2,
+        "requires_human_review": 9,
+        "unable_to_determine": 0,
+        "missing_evidence": 4
+      },
+      "unable_to_determine": {
+        "compliant": 0,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 5,
+        "missing_evidence": 0
+      },
+      "missing_evidence": {
+        "compliant": 0,
+        "non_compliant": 0,
+        "requires_human_review": 0,
+        "unable_to_determine": 0,
+        "missing_evidence": 0
+      }
+    },
     "class_metrics": {
       "compliant": {
-        "precision": 0.7143,
+        "precision": 1.0,
         "recall": 1.0,
-        "f1": 0.8333,
+        "f1": 1.0,
         "support": 10.0
       },
       "non_compliant": {
-        "precision": 0.75,
-        "recall": 0.6,
-        "f1": 0.6667,
+        "precision": 0.7778,
+        "recall": 0.7,
+        "f1": 0.7368,
         "support": 10.0
       },
       "requires_human_review": {
         "precision": 1.0,
-        "recall": 0.4,
-        "f1": 0.5714,
+        "recall": 0.6,
+        "f1": 0.75,
         "support": 15.0
       },
       "unable_to_determine": {
@@ -69,127 +106,52 @@
   },
   "finding_metrics": {
     "total_findings": 280,
-    "exact_status_matches": 260,
-    "reason_code_matches": 228,
-    "human_review_matches": 270,
-    "precision": 0.9794,
-    "recall": 0.9794,
-    "f1_score": 0.9794,
-    "exact_status_accuracy": 0.9286,
-    "reason_code_accuracy": 0.8143,
-    "human_review_accuracy": 0.9643
+    "exact_status_matches": 256,
+    "reason_code_matches": 222,
+    "human_review_matches": 266,
+    "precision": 0.9957,
+    "recall": 0.9465,
+    "f1_score": 0.9705,
+    "exact_status_accuracy": 0.9143,
+    "reason_code_accuracy": 0.7929,
+    "human_review_accuracy": 0.95
   },
   "fcr_metric": {
     "metric_name": "False Compliance Rate (FCR)",
-    "numerator": 1,
+    "numerator": 0,
     "denominator": 10,
-    "rate_percentage": 10.0,
-    "rate_string": "10.00%",
-    "affected_scenario_ids": [
-      "SCEN-16"
-    ],
-    "incident_details": [
-      {
-        "scenario_id": "SCEN-16",
-        "expected_status": "non_compliant",
-        "predicted_status": "compliant",
-        "error_type": "FALSE_COMPLIANT_ON_NON_COMPLIANT",
-        "reason_codes": [
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "POLICY_ACTIVE_AND_CURRENT",
-          "NAMED_INSURED_EXACT_MATCH",
-          "ENDORSEMENT_VERIFIED"
-        ]
-      }
-    ]
+    "rate_percentage": 0.0,
+    "rate_string": "0.00%",
+    "affected_scenario_ids": [],
+    "incident_details": []
   },
   "ucr_metric": {
     "metric_name": "Unsafe Compliance Rate (UCR)",
-    "numerator": 4,
+    "numerator": 0,
     "denominator": 30,
-    "rate_percentage": 13.333333333333334,
-    "rate_string": "13.33%",
-    "affected_scenario_ids": [
-      "SCEN-16",
-      "SCEN-24",
-      "SCEN-27",
-      "SCEN-36"
-    ],
-    "incident_details": [
-      {
-        "scenario_id": "SCEN-16",
-        "expected_status": "non_compliant",
-        "predicted_status": "compliant",
-        "error_type": "UNSAFE_COMPLIANT_PASS",
-        "reason_codes": [
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "POLICY_ACTIVE_AND_CURRENT",
-          "NAMED_INSURED_EXACT_MATCH",
-          "ENDORSEMENT_VERIFIED"
-        ]
-      },
-      {
-        "scenario_id": "SCEN-24",
-        "expected_status": "requires_human_review",
-        "predicted_status": "compliant",
-        "error_type": "UNSAFE_COMPLIANT_PASS",
-        "reason_codes": [
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "POLICY_ACTIVE_AND_CURRENT",
-          "NAMED_INSURED_EXACT_MATCH",
-          "ENDORSEMENT_VERIFIED"
-        ]
-      },
-      {
-        "scenario_id": "SCEN-27",
-        "expected_status": "requires_human_review",
-        "predicted_status": "compliant",
-        "error_type": "UNSAFE_COMPLIANT_PASS",
-        "reason_codes": [
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "POLICY_ACTIVE_AND_CURRENT",
-          "NAMED_INSURED_EXACT_MATCH",
-          "ENDORSEMENT_VERIFIED"
-        ]
-      },
-      {
-        "scenario_id": "SCEN-36",
-        "expected_status": "requires_human_review",
-        "predicted_status": "compliant",
-        "error_type": "UNSAFE_COMPLIANT_PASS",
-        "reason_codes": [
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "LIMIT_MEETS_OR_EXCEEDS_MINIMUM",
-          "POLICY_ACTIVE_AND_CURRENT",
-          "NAMED_INSURED_EXACT_MATCH",
-          "ENDORSEMENT_VERIFIED"
-        ]
-      }
-    ]
+    "rate_percentage": 0.0,
+    "rate_string": "0.00%",
+    "affected_scenario_ids": [],
+    "incident_details": []
   },
   "human_review_metrics": {
-    "uncertainty_recall": 0.8667,
+    "uncertainty_recall": 0.7,
     "human_review_precision": 1.0,
     "unnecessary_review_rate": 0.0,
-    "missed_review_rate": 0.1333,
-    "total_human_review_ground_truth": 30,
-    "escalated_to_human_review_count": 26,
+    "missed_review_rate": 0.4,
+    "total_human_review_ground_truth": 20,
+    "escalated_to_human_review_count": 14,
     "unnecessary_review_count": 0,
-    "missed_review_count": 4
+    "missed_review_count": 6,
+    "unsafe_non_pass_rate": 1.0,
+    "unsafe_non_pass_count": 30,
+    "total_unsafe_ground_truth": 30,
+    "human_review_recall": 0.6,
+    "human_review_recall_count": 9,
+    "total_requires_human_review_gt": 15,
+    "unable_to_determine_recall": 1.0,
+    "unable_to_determine_recall_count": 5,
+    "total_unable_to_determine_gt": 5
   },
   "evidence_metrics": {
     "total_evidence_claims": 71,
@@ -330,7 +292,7 @@
           "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
         }
       ],
-      "execution_time_seconds": 0.025
+      "execution_time_seconds": 0.032
     },
     {
       "scenario_id": "SCEN-02",
@@ -453,7 +415,7 @@
           "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
         }
       ],
-      "execution_time_seconds": 0.007
+      "execution_time_seconds": 0.018
     },
     {
       "scenario_id": "SCEN-03",
@@ -576,7 +538,7 @@
           "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
         }
       ],
-      "execution_time_seconds": 0.01
+      "execution_time_seconds": 0.007
     },
     {
       "scenario_id": "SCEN-04",
@@ -699,7 +661,7 @@
           "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
         }
       ],
-      "execution_time_seconds": 0.015
+      "execution_time_seconds": 0.02
     },
     {
       "scenario_id": "SCEN-05",
@@ -822,7 +784,7 @@
           "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
         }
       ],
-      "execution_time_seconds": 0.01
+      "execution_time_seconds": 0.015
     },
     {
       "scenario_id": "SCEN-06",
@@ -945,7 +907,7 @@
           "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
         }
       ],
-      "execution_time_seconds": 0.007
+      "execution_time_seconds": 0.012
     },
     {
       "scenario_id": "SCEN-07",
@@ -1068,7 +1030,7 @@
           "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
         }
       ],
-      "execution_time_seconds": 0.008
+      "execution_time_seconds": 0.01
     },
     {
       "scenario_id": "SCEN-08",
@@ -1191,7 +1153,7 @@
           "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
         }
       ],
-      "execution_time_seconds": 0.016
+      "execution_time_seconds": 0.017
     },
     {
       "scenario_id": "SCEN-09",
@@ -1314,7 +1276,7 @@
           "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
         }
       ],
-      "execution_time_seconds": 0.011
+      "execution_time_seconds": 0.009
     },
     {
       "scenario_id": "SCEN-10",
@@ -1437,7 +1399,7 @@
           "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
         }
       ],
-      "execution_time_seconds": 0.01
+      "execution_time_seconds": 0.016
     },
     {
       "scenario_id": "SCEN-11",
@@ -1548,19 +1510,19 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "compliant",
-          "predicted_status": "compliant",
-          "status_matched": true,
+          "predicted_status": "requires_human_review",
+          "status_matched": false,
           "expected_reason_code": "ENDORSEMENT_VERIFIED",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
-          "reason_code_matched": true,
+          "predicted_reason_code": "MANUSCRIPT_VERIFICATION_UNSUPPORTED",
+          "reason_code_matched": false,
           "expected_human_review": false,
-          "predicted_human_review": false,
-          "human_review_matched": true,
+          "predicted_human_review": true,
+          "human_review_matched": false,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (unspecified) has a negative manuscript claim ('NOT_DETECTED') that lacks a defensible verification basis or verified standard form provenance. Human review required."
         }
       ],
-      "execution_time_seconds": 0.003
+      "execution_time_seconds": 0.008
     },
     {
       "scenario_id": "SCEN-12",
@@ -1671,19 +1633,19 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "compliant",
-          "predicted_status": "compliant",
-          "status_matched": true,
+          "predicted_status": "requires_human_review",
+          "status_matched": false,
           "expected_reason_code": "ENDORSEMENT_VERIFIED",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
-          "reason_code_matched": true,
+          "predicted_reason_code": "MANUSCRIPT_VERIFICATION_UNSUPPORTED",
+          "reason_code_matched": false,
           "expected_human_review": false,
-          "predicted_human_review": false,
-          "human_review_matched": true,
+          "predicted_human_review": true,
+          "human_review_matched": false,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (unspecified) has a negative manuscript claim ('NOT_DETECTED') that lacks a defensible verification basis or verified standard form provenance. Human review required."
         }
       ],
-      "execution_time_seconds": 0.016
+      "execution_time_seconds": 0.008
     },
     {
       "scenario_id": "SCEN-13",
@@ -1794,19 +1756,19 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "compliant",
-          "predicted_status": "compliant",
-          "status_matched": true,
+          "predicted_status": "requires_human_review",
+          "status_matched": false,
           "expected_reason_code": "ENDORSEMENT_VERIFIED",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
-          "reason_code_matched": true,
+          "predicted_reason_code": "MANUSCRIPT_VERIFICATION_UNSUPPORTED",
+          "reason_code_matched": false,
           "expected_human_review": false,
-          "predicted_human_review": false,
-          "human_review_matched": true,
+          "predicted_human_review": true,
+          "human_review_matched": false,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (unspecified) has a negative manuscript claim ('NOT_DETECTED') that lacks a defensible verification basis or verified standard form provenance. Human review required."
         }
       ],
-      "execution_time_seconds": 0.009
+      "execution_time_seconds": 0.008
     },
     {
       "scenario_id": "SCEN-14",
@@ -1929,7 +1891,7 @@
           "explanation": "Required additional_insured endorsement was not found in uploaded documents."
         }
       ],
-      "execution_time_seconds": 0.001
+      "execution_time_seconds": 0.011
     },
     {
       "scenario_id": "SCEN-15",
@@ -2040,31 +2002,31 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "compliant",
-          "predicted_status": "compliant",
-          "status_matched": true,
+          "predicted_status": "requires_human_review",
+          "status_matched": false,
           "expected_reason_code": "ENDORSEMENT_VERIFIED",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
-          "reason_code_matched": true,
+          "predicted_reason_code": "MANUSCRIPT_VERIFICATION_UNSUPPORTED",
+          "reason_code_matched": false,
           "expected_human_review": false,
-          "predicted_human_review": false,
-          "human_review_matched": true,
+          "predicted_human_review": true,
+          "human_review_matched": false,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (unspecified) has a negative manuscript claim ('NOT_DETECTED') that lacks a defensible verification basis or verified standard form provenance. Human review required."
         }
       ],
-      "execution_time_seconds": 0.015
+      "execution_time_seconds": 0.012
     },
     {
       "scenario_id": "SCEN-16",
       "title": "Policy Not Yet Effective (Future Inception Date)",
       "expected_status": "non_compliant",
-      "predicted_status": "compliant",
-      "status_matched": false,
+      "predicted_status": "non_compliant",
+      "status_matched": true,
       "expected_requires_human_review": true,
-      "predicted_requires_human_review": false,
-      "human_review_matched": false,
-      "is_unsafe_pass": true,
-      "is_false_compliant": true,
+      "predicted_requires_human_review": true,
+      "human_review_matched": true,
+      "is_unsafe_pass": false,
+      "is_false_compliant": false,
       "processing_status": "success",
       "error_type": null,
       "error_message": null,
@@ -2163,19 +2125,19 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "compliant",
-          "predicted_status": "compliant",
-          "status_matched": true,
+          "predicted_status": "requires_human_review",
+          "status_matched": false,
           "expected_reason_code": "ENDORSEMENT_VERIFIED",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
-          "reason_code_matched": true,
+          "predicted_reason_code": "MANUSCRIPT_VERIFICATION_UNSUPPORTED",
+          "reason_code_matched": false,
           "expected_human_review": false,
-          "predicted_human_review": false,
-          "human_review_matched": true,
+          "predicted_human_review": true,
+          "human_review_matched": false,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (unspecified) has a negative manuscript claim ('NOT_DETECTED') that lacks a defensible verification basis or verified standard form provenance. Human review required."
         }
       ],
-      "execution_time_seconds": 0.008
+      "execution_time_seconds": 0.013
     },
     {
       "scenario_id": "SCEN-17",
@@ -2286,19 +2248,19 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "compliant",
-          "predicted_status": "compliant",
-          "status_matched": true,
+          "predicted_status": "requires_human_review",
+          "status_matched": false,
           "expected_reason_code": "ENDORSEMENT_VERIFIED",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
-          "reason_code_matched": true,
+          "predicted_reason_code": "MANUSCRIPT_VERIFICATION_UNSUPPORTED",
+          "reason_code_matched": false,
           "expected_human_review": false,
-          "predicted_human_review": false,
-          "human_review_matched": true,
+          "predicted_human_review": true,
+          "human_review_matched": false,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (unspecified) has a negative manuscript claim ('NOT_DETECTED') that lacks a defensible verification basis or verified standard form provenance. Human review required."
         }
       ],
-      "execution_time_seconds": 0.008
+      "execution_time_seconds": 0.011
     },
     {
       "scenario_id": "SCEN-18",
@@ -2409,16 +2371,16 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "compliant",
-          "predicted_status": "compliant",
-          "status_matched": true,
+          "predicted_status": "requires_human_review",
+          "status_matched": false,
           "expected_reason_code": "ENDORSEMENT_VERIFIED",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
-          "reason_code_matched": true,
+          "predicted_reason_code": "MANUSCRIPT_VERIFICATION_UNSUPPORTED",
+          "reason_code_matched": false,
           "expected_human_review": false,
-          "predicted_human_review": false,
-          "human_review_matched": true,
+          "predicted_human_review": true,
+          "human_review_matched": false,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (unspecified) has a negative manuscript claim ('NOT_DETECTED') that lacks a defensible verification basis or verified standard form provenance. Human review required."
         }
       ],
       "execution_time_seconds": 0.01
@@ -2532,19 +2494,19 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "compliant",
-          "predicted_status": "compliant",
-          "status_matched": true,
+          "predicted_status": "requires_human_review",
+          "status_matched": false,
           "expected_reason_code": "ENDORSEMENT_VERIFIED",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
-          "reason_code_matched": true,
+          "predicted_reason_code": "MANUSCRIPT_VERIFICATION_UNSUPPORTED",
+          "reason_code_matched": false,
           "expected_human_review": false,
-          "predicted_human_review": false,
-          "human_review_matched": true,
+          "predicted_human_review": true,
+          "human_review_matched": false,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (unspecified) has a negative manuscript claim ('NOT_DETECTED') that lacks a defensible verification basis or verified standard form provenance. Human review required."
         }
       ],
-      "execution_time_seconds": 0.007
+      "execution_time_seconds": 0.008
     },
     {
       "scenario_id": "SCEN-20",
@@ -2667,7 +2629,7 @@
           "explanation": "Required additional_insured endorsement was not found in uploaded documents."
         }
       ],
-      "execution_time_seconds": 0.008
+      "execution_time_seconds": 0.007
     },
     {
       "scenario_id": "SCEN-21",
@@ -2790,7 +2752,7 @@
           "explanation": "additional_insured endorsement form (blanket) provides automatic coverage 'where required by written contract'. Human review is required to verify an executed written contract exists."
         }
       ],
-      "execution_time_seconds": 0.008
+      "execution_time_seconds": 0.018
     },
     {
       "scenario_id": "SCEN-22",
@@ -2913,7 +2875,7 @@
           "explanation": "Required additional_insured endorsement was not found in uploaded documents."
         }
       ],
-      "execution_time_seconds": 0.0
+      "execution_time_seconds": 0.009
     },
     {
       "scenario_id": "SCEN-23",
@@ -3036,18 +2998,18 @@
           "explanation": "A checkbox for additional_insured is marked on the ACORD 25 COI, but no supporting endorsement form or policy wording document was submitted. COI checkboxes alone do not grant coverage; separate endorsement document is required."
         }
       ],
-      "execution_time_seconds": 0.009
+      "execution_time_seconds": 0.013
     },
     {
       "scenario_id": "SCEN-24",
       "title": "Ambiguous Endorsement Wording with Manuscript Limitations",
       "expected_status": "requires_human_review",
-      "predicted_status": "compliant",
-      "status_matched": false,
+      "predicted_status": "requires_human_review",
+      "status_matched": true,
       "expected_requires_human_review": true,
-      "predicted_requires_human_review": false,
-      "human_review_matched": false,
-      "is_unsafe_pass": true,
+      "predicted_requires_human_review": true,
+      "human_review_matched": true,
+      "is_unsafe_pass": false,
       "is_false_compliant": false,
       "processing_status": "success",
       "error_type": null,
@@ -3147,19 +3109,19 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "requires_human_review",
-          "predicted_status": "compliant",
-          "status_matched": false,
+          "predicted_status": "requires_human_review",
+          "status_matched": true,
           "expected_reason_code": "AMBIGUOUS_ENDORSEMENT_TERMS",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
-          "reason_code_matched": false,
+          "predicted_reason_code": "AMBIGUOUS_ENDORSEMENT_TERMS",
+          "reason_code_matched": true,
           "expected_human_review": true,
-          "predicted_human_review": false,
-          "human_review_matched": false,
+          "predicted_human_review": true,
+          "human_review_matched": true,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (CG 20 10 04 13) contains restrictive wording or custom exclusions: Endorsement contains non-standard restrictive project provisions. Human review required to verify whether coverage is legally and contractually sufficient."
         }
       ],
-      "execution_time_seconds": 0.008
+      "execution_time_seconds": 0.014
     },
     {
       "scenario_id": "SCEN-25",
@@ -3282,7 +3244,7 @@
           "explanation": "Required additional_insured endorsement was not found in uploaded documents."
         }
       ],
-      "execution_time_seconds": 0.009
+      "execution_time_seconds": 0.008
     },
     {
       "scenario_id": "SCEN-26",
@@ -3405,18 +3367,18 @@
           "explanation": "Required additional_insured endorsement was not found in uploaded documents."
         }
       ],
-      "execution_time_seconds": 0.0
+      "execution_time_seconds": 0.008
     },
     {
       "scenario_id": "SCEN-27",
       "title": "Endorsement Agreement Date Discrepancy",
       "expected_status": "requires_human_review",
-      "predicted_status": "compliant",
-      "status_matched": false,
+      "predicted_status": "requires_human_review",
+      "status_matched": true,
       "expected_requires_human_review": true,
-      "predicted_requires_human_review": false,
-      "human_review_matched": false,
-      "is_unsafe_pass": true,
+      "predicted_requires_human_review": true,
+      "human_review_matched": true,
+      "is_unsafe_pass": false,
       "is_false_compliant": false,
       "processing_status": "success",
       "error_type": null,
@@ -3516,19 +3478,19 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "requires_human_review",
-          "predicted_status": "compliant",
-          "status_matched": false,
+          "predicted_status": "requires_human_review",
+          "status_matched": true,
           "expected_reason_code": "ENDORSEMENT_AGREEMENT_DATE_MISMATCH",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
-          "reason_code_matched": false,
+          "predicted_reason_code": "ENDORSEMENT_AGREEMENT_DATE_MISMATCH",
+          "reason_code_matched": true,
           "expected_human_review": true,
-          "predicted_human_review": false,
-          "human_review_matched": false,
+          "predicted_human_review": true,
+          "human_review_matched": true,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (CG 20 10 04 13) contains restrictive wording or custom exclusions: Endorsement references agreement dated prior to prime contract. Human review required to verify whether coverage is legally and contractually sufficient."
         }
       ],
-      "execution_time_seconds": 0.008
+      "execution_time_seconds": 0.02
     },
     {
       "scenario_id": "SCEN-28",
@@ -3651,7 +3613,7 @@
           "explanation": "additional_insured endorsement form (blanket) provides automatic coverage 'where required by written contract'. Human review is required to verify an executed written contract exists."
         }
       ],
-      "execution_time_seconds": 0.012
+      "execution_time_seconds": 0.02
     },
     {
       "scenario_id": "SCEN-29",
@@ -3774,7 +3736,7 @@
           "explanation": "Required additional_insured endorsement was not found, but the submitted document set is flagged as incomplete. Endorsement pages may be missing."
         }
       ],
-      "execution_time_seconds": 0.005
+      "execution_time_seconds": 0.009
     },
     {
       "scenario_id": "SCEN-30",
@@ -3897,7 +3859,7 @@
           "explanation": "Required additional_insured endorsement was not found, but the submitted document set is flagged as incomplete. Endorsement pages may be missing."
         }
       ],
-      "execution_time_seconds": 0.008
+      "execution_time_seconds": 0.009
     },
     {
       "scenario_id": "SCEN-31",
@@ -4020,7 +3982,7 @@
           "explanation": "Required additional_insured endorsement was not found, but the submitted document set is flagged as incomplete. Endorsement pages may be missing."
         }
       ],
-      "execution_time_seconds": 0.002
+      "execution_time_seconds": 0.006
     },
     {
       "scenario_id": "SCEN-32",
@@ -4143,7 +4105,7 @@
           "explanation": "Required additional_insured endorsement was not found, but the submitted document set is flagged as incomplete. Endorsement pages may be missing."
         }
       ],
-      "execution_time_seconds": 0.008
+      "execution_time_seconds": 0.002
     },
     {
       "scenario_id": "SCEN-33",
@@ -4266,7 +4228,7 @@
           "explanation": "Required additional_insured endorsement was not found, but the submitted document set is flagged as incomplete. Endorsement pages may be missing."
         }
       ],
-      "execution_time_seconds": 0.0
+      "execution_time_seconds": 0.005
     },
     {
       "scenario_id": "SCEN-34",
@@ -4377,19 +4339,19 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "requires_human_review",
-          "predicted_status": "compliant",
-          "status_matched": false,
+          "predicted_status": "requires_human_review",
+          "status_matched": true,
           "expected_reason_code": "CONTRADICTORY_POLICY_NUMBERS_DETECTED",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
+          "predicted_reason_code": "MANUSCRIPT_VERIFICATION_UNSUPPORTED",
           "reason_code_matched": false,
           "expected_human_review": true,
-          "predicted_human_review": false,
-          "human_review_matched": false,
+          "predicted_human_review": true,
+          "human_review_matched": true,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (unspecified) has a negative manuscript claim ('NOT_DETECTED') that lacks a defensible verification basis or verified standard form provenance. Human review required."
         }
       ],
-      "execution_time_seconds": 0.008
+      "execution_time_seconds": 0.01
     },
     {
       "scenario_id": "SCEN-35",
@@ -4512,18 +4474,18 @@
           "explanation": "Required additional_insured endorsement was not found in uploaded documents."
         }
       ],
-      "execution_time_seconds": 0.007
+      "execution_time_seconds": 0.012
     },
     {
       "scenario_id": "SCEN-36",
       "title": "Contradictory Policy Effective Dates Between Documents",
       "expected_status": "requires_human_review",
-      "predicted_status": "compliant",
-      "status_matched": false,
+      "predicted_status": "requires_human_review",
+      "status_matched": true,
       "expected_requires_human_review": true,
-      "predicted_requires_human_review": false,
-      "human_review_matched": false,
-      "is_unsafe_pass": true,
+      "predicted_requires_human_review": true,
+      "human_review_matched": true,
+      "is_unsafe_pass": false,
       "is_false_compliant": false,
       "processing_status": "success",
       "error_type": null,
@@ -4632,10 +4594,10 @@
           "predicted_human_review": false,
           "human_review_matched": false,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (CG 20 10 04 13) verified with document evidence."
         }
       ],
-      "execution_time_seconds": 0.008
+      "execution_time_seconds": 0.007
     },
     {
       "scenario_id": "SCEN-37",
@@ -4746,19 +4708,19 @@
           "requirement_id": "REQ_ADDITIONAL_INSURED",
           "rule_type": "endorsement_presence",
           "expected_status": "requires_human_review",
-          "predicted_status": "compliant",
-          "status_matched": false,
+          "predicted_status": "requires_human_review",
+          "status_matched": true,
           "expected_reason_code": "CONTRADICTORY_ENDORSEMENTS_FOUND",
-          "predicted_reason_code": "ENDORSEMENT_VERIFIED",
+          "predicted_reason_code": "ENDORSEMENT_EVIDENCE_SUPPORT_UNVERIFIED",
           "reason_code_matched": false,
           "expected_human_review": true,
-          "predicted_human_review": false,
-          "human_review_matched": false,
+          "predicted_human_review": true,
+          "human_review_matched": true,
           "evidence_grounding_status": "supported",
-          "explanation": "additional_insured endorsement form (Standard) verified with document evidence."
+          "explanation": "additional_insured endorsement form (CG 20 10 04 13) has cited text on the page, but specific semantic support for this endorsement is unverified. Human review required."
         }
       ],
-      "execution_time_seconds": 0.01
+      "execution_time_seconds": 0.015
     },
     {
       "scenario_id": "SCEN-38",
@@ -4881,7 +4843,7 @@
           "explanation": "additional_insured endorsement form (unspecified) has cited text on the page, but specific semantic support for this endorsement is unverified. Human review required."
         }
       ],
-      "execution_time_seconds": 0.006
+      "execution_time_seconds": 0.014
     },
     {
       "scenario_id": "SCEN-39",
@@ -5004,7 +4966,7 @@
           "explanation": "additional_insured endorsement record exists but has no supporting text evidence from the document."
         }
       ],
-      "execution_time_seconds": 0.0
+      "execution_time_seconds": 0.004
     },
     {
       "scenario_id": "SCEN-40",
@@ -5131,11 +5093,11 @@
     }
   ],
   "execution_failures": [],
-  "execution_time_seconds": 0.396,
+  "execution_time_seconds": 0.548,
   "environment_metadata": {
     "os": "Windows 11",
     "python_version": "3.12.0",
-    "git_commit": "cdb7fec630d4def33c6e1ee097310023e415db37",
+    "git_commit": "b983d1bfede1ee80cca5f9b47de29b6cc27712a5",
     "git_branch": "main",
     "pydantic_version": "2.14.2",
     "pymupdf_version": "2.0"

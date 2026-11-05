@@ -54,9 +54,9 @@ def extract_http_error_details(exc: Exception) -> Dict[str, Any]:
 
     Defensive extraction precedence:
     1. Standard structured error body: body['error']['message'], ['type'], ['code'], ['param']
-    2. Alternative structured fields: body['message'], body['detail'], body['description']
-    3. Raw HTTP response text: exc.response.text, if safely accessible
-    4. Final fallback: str(exc)
+    2. Alternative structured fields: body['message'], body['detail'], body['description'], alt keys
+    3. Raw HTTP response text: exc.response.text or exc.response.content, safely read if unconsumed
+    4. Exception string details or explicit empty body limitation
     """
     details: Dict[str, Any] = {
         "status_code": getattr(exc, "status_code", None),
@@ -79,7 +79,11 @@ def extract_http_error_details(exc: Exception) -> Dict[str, Any]:
         if details["request_id"] is None and hasattr(exc, "response"):
             headers = getattr(exc.response, "headers", None)
             if headers and hasattr(headers, "get"):
-                details["request_id"] = headers.get("x-request-id")
+                for req_hdr in ("x-request-id", "x-openrouter-request-id", "cf-ray", "request-id"):
+                    val = headers.get(req_hdr)
+                    if val and str(val).strip():
+                        details["request_id"] = str(val).strip()
+                        break
     except Exception:
         pass
 
@@ -129,17 +133,48 @@ def extract_http_error_details(exc: Exception) -> Dict[str, Any]:
         # 2c. body["description"]
         elif body.get("description") is not None and str(body.get("description")).strip():
             extracted_msg = str(body.get("description")).strip()
+        # 2d. Other common dict fields (msg, error_description, reason, or full body dump)
+        elif body:
+            for alt_k in ("msg", "err", "error_description", "reason"):
+                if body.get(alt_k) and str(body.get(alt_k)).strip():
+                    extracted_msg = str(body.get(alt_k)).strip()
+                    break
+            if not extracted_msg:
+                try:
+                    extracted_msg = json.dumps(body)
+                except Exception:
+                    pass
 
     # If body is a plain non-empty string
     if not extracted_msg and isinstance(body, str) and body.strip():
         extracted_msg = body.strip()
 
-    # 3. Raw HTTP response text, if safely accessible
+    # 3. Raw HTTP response text or content, if safely accessible
     if not extracted_msg:
         try:
             resp = getattr(exc, "response", None)
-            if resp is not None and hasattr(resp, "text"):
-                resp_text = resp.text
+            if resp is not None:
+                # Read stream to completion if not already consumed
+                if hasattr(resp, "read") and not getattr(resp, "is_stream_consumed", True):
+                    try:
+                        resp.read()
+                    except Exception:
+                        pass
+
+                resp_text = None
+                if hasattr(resp, "text"):
+                    try:
+                        resp_text = resp.text
+                    except Exception:
+                        pass
+                if not resp_text and hasattr(resp, "content"):
+                    try:
+                        raw_bytes = resp.content
+                        if raw_bytes:
+                            resp_text = raw_bytes.decode("utf-8", errors="replace")
+                    except Exception:
+                        pass
+
                 if isinstance(resp_text, str) and resp_text.strip():
                     try:
                         parsed_json = json.loads(resp_text)
@@ -160,6 +195,8 @@ def extract_http_error_details(exc: Exception) -> Dict[str, Any]:
                                 extracted_msg = str(det) if not isinstance(det, (dict, list)) else json.dumps(det)
                             elif parsed_json.get("description"):
                                 extracted_msg = str(parsed_json.get("description")).strip()
+                            else:
+                                extracted_msg = json.dumps(parsed_json)
                     except Exception:
                         pass
                     if not extracted_msg:
@@ -167,12 +204,17 @@ def extract_http_error_details(exc: Exception) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # 4. Final fallback: str(exc)
+    # 4. Final fallback check: inspect exc string or explicitly report empty body
     if not extracted_msg or not str(extracted_msg).strip():
-        try:
-            extracted_msg = str(exc)
-        except Exception:
-            extracted_msg = "Unknown error"
+        exc_str = str(exc).strip() if exc else ""
+        if " - " in exc_str:
+            # SDK formatted error string like 'Error code: 400 - Actual upstream message'
+            extracted_msg = exc_str.split(" - ", 1)[1].strip()
+        elif exc_str:
+            extracted_msg = exc_str
+        else:
+            status_desc = f"HTTP {details['status_code']}" if details.get('status_code') else "HTTP error"
+            extracted_msg = f"No error details provided by upstream API ({status_desc})"
 
     # Truncate excessively long error messages (avoid giant HTML / raw dumps)
     MAX_ERROR_MSG_LENGTH = 1000
@@ -181,6 +223,8 @@ def extract_http_error_details(exc: Exception) -> Dict[str, Any]:
 
     # Sanitize and redact credentials in all string fields
     details["message"] = sanitize_error_message(extracted_msg)
+    if details["request_id"]:
+        details["request_id"] = sanitize_error_message(str(details["request_id"]))
     if details["error_type"]:
         details["error_type"] = sanitize_error_message(str(details["error_type"]))
     if details["error_code"]:
@@ -654,7 +698,10 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
 
                 # 5. Invalid request / model capability (HTTP 400, 404, 422) - non-retryable
                 if status_code in (400, 404, 422) or "not found" in err_lower or "invalid request" in err_lower or is_resp_format_err:
-                    formatted_err = f"OpenRouter invalid request/model error (HTTP {status_code or 400}): {server_msg}"
+                    if server_msg.startswith("OpenRouter invalid request/model error"):
+                        formatted_err = server_msg
+                    else:
+                        formatted_err = f"OpenRouter invalid request/model error (HTTP {status_code or 400}): {server_msg}"
                     code_to_report = "unsupported_response_format" if is_resp_format_err else (error_code or f"http_{status_code or 400}")
                     raise ExtractionInvalidRequestError(
                         formatted_err,

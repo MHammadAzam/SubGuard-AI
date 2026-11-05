@@ -1,11 +1,11 @@
 # SubGuard AI Multi-Document Benchmark Report
 
-- **Benchmark Run ID:** `scenario_bench_2114df17`
-- **Timestamp (UTC):** `2026-11-04T14:05:46.036915+00:00`
-- **Cohort Manifest:** `cohort_v1.0.0` (`adf3195e1001...`)
-- **Provider:** `mock` (`ScenarioBenchmarkMockProvider`)
-- **Total Scenarios:** 1 (1 success, 0 failed)
-- **Execution Time:** 0.09 seconds
+- **Benchmark Run ID:** `live_diagnostic_scen03`
+- **Timestamp (UTC):** `2026-11-05T17:35:36.110223+00:00`
+- **Cohort Manifest:** `cohort_v1.0.0` (`5e33540a3260...`)
+- **Provider:** `openrouter` (`nvidia/nemotron-3.5-super-vl:free`)
+- **Total Scenarios:** 1 (0 success, 1 failed)
+- **Execution Time:** 3.25 seconds
 
 ---
 
@@ -34,7 +34,7 @@
 
 | Ground Truth \ Predicted | COMPLIANT | NON_COMPLIANT | REQUIRES_HUMAN_REVIEW | UNABLE_TO_DETERMINE |
 | :--- | :---: | :---: | :---: | :---: |
-| **COMPLIANT** | 0 | 0 | 1 | 0 |
+| **COMPLIANT** | 0 | 0 | 0 | 1 |
 | **NON_COMPLIANT** | 0 | 0 | 0 | 0 |
 | **REQUIRES_HUMAN_REVIEW** | 0 | 0 | 0 | 0 |
 | **UNABLE_TO_DETERMINE** | 0 | 0 | 0 | 0 |
@@ -43,7 +43,7 @@
 
 | Ground Truth \ Predicted | COMPLIANT | NON_COMPLIANT | REQUIRES_HUMAN_REVIEW | UNABLE_TO_DETERMINE | MISSING_EVIDENCE |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **COMPLIANT** | 0 | 0 | 1 | 0 | 0 |
+| **COMPLIANT** | 0 | 0 | 0 | 0 | 0 |
 | **NON_COMPLIANT** | 0 | 0 | 0 | 0 | 0 |
 | **REQUIRES_HUMAN_REVIEW** | 0 | 0 | 0 | 0 | 0 |
 | **UNABLE_TO_DETERMINE** | 0 | 0 | 0 | 0 | 0 |
@@ -54,12 +54,12 @@
 
 | Metric | Score | Matches / Total |
 | :--- | :---: | :---: |
-| **Exact Status Accuracy** | 85.71% | 6/7 |
-| **Reason Code Accuracy** | 71.43% | 5/7 |
-| **Human Review Accuracy** | 85.71% | 6/7 |
-| **Compliance Precision** | 1.0000 | - |
-| **Compliance Recall** | 0.8571 | - |
-| **Compliance F1 Score** | 0.9231 | - |
+| **Exact Status Accuracy** | 0.00% | 0/0 |
+| **Reason Code Accuracy** | 0.00% | 0/0 |
+| **Human Review Accuracy** | 0.00% | 0/0 |
+| **Compliance Precision** | 0.0000 | - |
+| **Compliance Recall** | 0.0000 | - |
+| **Compliance F1 Score** | 0.0000 | - |
 
 ---
 
@@ -71,8 +71,8 @@
 | **Uncertainty Recall (Routing)** | 100.00% | 0 / 0 | GT in {Review, Unable} predicted as Review or Unable |
 | **Human-Review Recall** | 100.00% | 0 / 0 | GT Review predicted strictly as REQUIRES_HUMAN_REVIEW |
 | **Unable-to-Determine Recall** | 100.00% | 0 / 0 | GT Unable predicted strictly as UNABLE_TO_DETERMINE |
-| **Review Precision** | 0.00% | - | Predicted Review cases that were ground-truth Review |
-| **Unnecessary Review Rate** | 100.00% | 1 / 10 | Clean compliant submissions routed to review |
+| **Review Precision** | 100.00% | - | Predicted Review cases that were ground-truth Review |
+| **Unnecessary Review Rate** | 0.00% | 0 / 10 | Clean compliant submissions routed to review |
 | **Missed Review Rate** | 0.00% | 0 / 0 | GT Review cases not predicted as Review |
 
 ---
@@ -81,12 +81,12 @@
 
 | Metric | Score | Count / Total |
 | :--- | :---: | :---: |
-| **Quotation Exact Match Rate** | 100.00% | 7/7 |
-| **Document Attribution Accuracy** | 100.00% | - |
-| **Page Attribution Accuracy** | 100.00% | - |
-| **Claim-to-Evidence Support Rate (CESR)** | 100.00% | 7/7 |
-| **Unsupported Claim Rate (UCR)** | 0.00% | 0/7 |
-| **Missing Evidence Rate** | 0.00% | 0/7 |
+| **Quotation Exact Match Rate** | 0.00% | 0/0 |
+| **Document Attribution Accuracy** | 0.00% | - |
+| **Page Attribution Accuracy** | 0.00% | - |
+| **Claim-to-Evidence Support Rate (CESR)** | 0.00% | 0/0 |
+| **Unsupported Claim Rate (UCR)** | 0.00% | 0/0 |
+| **Missing Evidence Rate** | 0.00% | 0/0 |
 
 ---
 
@@ -94,4 +94,12 @@
 
 | Scenario ID | Expected Status | Predicted Status | Status Match | HR Match | Unsafe Pass | Runtime |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| `SCEN-01` | `compliant` | `requires_human_review` | ❌ | ❌ | OK | 0.02s |
+| `SCEN-01` | `compliant` | `extraction_failed` | ❌ | ❌ | OK | 3.17s |
+
+---
+
+## 7. Execution Failures & Diagnostic Details
+
+| Scenario ID | Error Type | Status Code | Error Code | Request ID | Error Message |
+| :--- | :--- | :---: | :---: | :---: | :--- |
+| `SCEN-01` | `ExtractionInvalidRequestError` | 400 | `http_400` | `-` | AI extraction provider 'openrouter' failed: OpenRouter invalid request/model error (HTTP 400): Error code: 400; AI extraction provider 'openrouter' failed: OpenRouter invalid request/model error (HTTP 400): Error code: 400 |

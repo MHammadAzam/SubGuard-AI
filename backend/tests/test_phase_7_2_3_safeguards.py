@@ -264,6 +264,7 @@ class TestPhase723WorkPackageC(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             confidence=0.95,
             extraction_status=ExtractionStatus.EXTRACTED,
             evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
@@ -375,6 +376,7 @@ class TestPhase723WorkPackageD(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             confidence=0.95,
             extraction_status=ExtractionStatus.EXTRACTED,
             evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
@@ -516,6 +518,7 @@ class TestEighteenComplianceCategories(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             confidence=0.95,
             extraction_status=ExtractionStatus.EXTRACTED,
             evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
@@ -543,6 +546,7 @@ class TestEighteenComplianceCategories(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             confidence=0.95,
             extraction_status=ExtractionStatus.EXTRACTED,
             evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured"),
@@ -752,6 +756,7 @@ class TestEighteenComplianceCategories(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             confidence=0.95,
             evidence=None,  # No evidence text
         )
@@ -839,6 +844,7 @@ class TestEighteenComplianceCategories(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             confidence=0.95,
             extraction_status=ExtractionStatus.EXTRACTED,
             evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Project Owner Municipal Authority"),
@@ -892,6 +898,7 @@ class TestEighteenComplianceCategories(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             confidence=0.95,
             extraction_status=ExtractionStatus.EXTRACTED,
             evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured Policy 1"),
@@ -904,6 +911,7 @@ class TestEighteenComplianceCategories(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             confidence=0.95,
             extraction_status=ExtractionStatus.EXTRACTED,
             evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured Policy 2"),
@@ -974,6 +982,7 @@ class Phase7234RemediationTests(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             confidence=0.95,
             extraction_status=ExtractionStatus.EXTRACTED,
             evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="CUSTOM-MOD-999"),
@@ -1140,6 +1149,7 @@ class Phase7234RemediationTests(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             confidence=0.95,
             extraction_status=ExtractionStatus.EXTRACTED,
             evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="EFFECTIVE DATE: 07/01/2025"),
@@ -1207,6 +1217,389 @@ class Phase7234RemediationTests(unittest.TestCase):
         end = result.document_set.endorsements[0]
         # Since '07012025' does not appear in doc text, pipeline resets effective_date to None
         self.assertIsNone(end.effective_date)
+
+    def test_manuscript_provider_full_text_inspection_claim_unsupported(self):
+        """Provider-supplied full_text_inspection claim without verifiable standard form provenance routes to human review."""
+        cov = sample_gl_coverage()
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="full_text_inspection",  # Provider assertion without independent verification
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=cov, endorsements=[end])
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Additional Insured required",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+        )
+        res = self.evaluator.evaluate(doc_set, [req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_VERIFICATION_UNSUPPORTED")
+
+
+class Phase7236TrustBoundaryRemediationTests(unittest.TestCase):
+    """Phase 7.2.3.6: Exhaustive Adversarial Tests for Manuscript Trust-Boundary Closure.
+
+    Guarantees:
+    - Provider assertions never independently prove that a document is an unmodified standard form.
+    - Negative manuscript claims ('NOT_DETECTED') without independent document-integrity verification
+      fall back conservatively to REQUIRES_HUMAN_REVIEW (MANUSCRIPT_VERIFICATION_UNSUPPORTED).
+    - True compliance requires verified standard form provenance via independent integrity verification.
+    """
+
+    def setUp(self):
+        self.evaluator = ComplianceEvaluator()
+        self.eval_date = EVAL_DATE
+        self.cov = sample_gl_coverage()
+        self.req = InsuranceRequirement(
+            requirement_id="REQ_AI",
+            description="Additional Insured required",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+        )
+
+    def test_adv_01_recognized_form_provider_claims_unmodified_routes_to_human_review(self):
+        """Case 1: Recognized form (CG 20 10) + provider claims NOT_DETECTED + unmodified_standard_form
+        WITHOUT independent integrity verification mechanism -> REQUIRES_HUMAN_REVIEW (MANUSCRIPT_VERIFICATION_UNSUPPORTED).
+        """
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",  # Untrusted provider assertion
+            independent_integrity_verified=False,                     # No independent verification
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=self.cov, endorsements=[end])
+        res = self.evaluator.evaluate(doc_set, [self.req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_VERIFICATION_UNSUPPORTED")
+        self.assertTrue(finding.requires_human_review)
+
+    def test_adv_02_recognized_form_provider_claims_full_text_inspection_routes_to_human_review(self):
+        """Case 2: Recognized form (CG 20 10) + provider claims NOT_DETECTED + full_text_inspection
+        -> REQUIRES_HUMAN_REVIEW (MANUSCRIPT_VERIFICATION_UNSUPPORTED).
+        """
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="full_text_inspection",  # Untrusted provider assertion
+            independent_integrity_verified=False,
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=self.cov, endorsements=[end])
+        res = self.evaluator.evaluate(doc_set, [self.req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_VERIFICATION_UNSUPPORTED")
+        self.assertTrue(finding.requires_human_review)
+
+    def test_adv_03_recognized_form_provider_claims_no_basis_routes_to_human_review(self):
+        """Case 3: Recognized form (CG 20 10) + provider claims NOT_DETECTED + basis=None
+        -> REQUIRES_HUMAN_REVIEW (MANUSCRIPT_VERIFICATION_UNSUPPORTED).
+        """
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis=None,
+            independent_integrity_verified=False,
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=self.cov, endorsements=[end])
+        res = self.evaluator.evaluate(doc_set, [self.req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_VERIFICATION_UNSUPPORTED")
+
+    def test_adv_04_recognized_form_custom_restriction_in_doc_text_routes_to_restriction_detected(self):
+        """Case 4: Recognized form (CG 20 10) + provider falsely claims NOT_DETECTED + custom restriction in doc text
+        -> pipeline full text scan catches restriction -> REQUIRES_HUMAN_REVIEW (MANUSCRIPT_RESTRICTION_DETECTED).
+        """
+        inspection = PDFDocumentInspection(
+            document_id="TEST-DOC-ADV-04",
+            filename="endorsement_with_restriction.pdf",
+            file_size_bytes=1000,
+            content_hash_sha256="abc_adv_04",
+            classified_type=DocumentType.ENDORSEMENT,
+            classification_confidence=0.95,
+            classification_reason="test",
+            page_count=1,
+            processing_status=DocumentProcessingStatus.PROCESSED,
+            pages=[
+                PDFPageInspection(
+                    page_number=1,
+                    text_content="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13. Subject to residential work exclusion endorsement.",
+                    width_pts=612.0,
+                    height_pts=792.0,
+                    content_hash_sha256="hash_adv_04",
+                )
+            ],
+        )
+        raw_extraction = RawInsuranceExtraction(
+            document_type="endorsement",
+            endorsements=[
+                RawEndorsement(
+                    endorsement_type="additional_insured",
+                    form_number="CG 20 10 04 13",
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,  # Provider falsely claims clean
+                    manuscript_status="NOT_DETECTED",
+                    manuscript_verification_basis="unmodified_standard_form",
+                    confidence=0.95,
+                    evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13",
+                    ),
+                )
+            ],
+            is_document_set_complete=True,
+        )
+        pipeline = ExtractionPipelineService(
+            extraction_provider=MockExtractionProvider(canned_response=raw_extraction)
+        )
+        result = pipeline.process_inspection(inspection, subcontractor_id="SUB-ADV-04")
+        doc_set = result.document_set
+        self.assertIsNotNone(doc_set)
+        end = doc_set.endorsements[0]
+        self.assertTrue(end.manuscript_clause_detected)
+        self.assertEqual(end.manuscript_status, "DETECTED")
+
+        eval_res = self.evaluator.evaluate(doc_set, [self.req], self.eval_date)
+        finding = eval_res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_RESTRICTION_DETECTED")
+
+    def test_adv_05_recognized_form_fabricated_variation_routes_to_human_review(self):
+        """Case 5: Recognized form base with fabricated/unrecognized edition suffix (e.g. CG 20 10 99 99)
+        -> REQUIRES_HUMAN_REVIEW (MANUSCRIPT_VERIFICATION_UNSUPPORTED).
+        """
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 99 99",  # Fabricated edition
+            named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=False,  # Unverified fabricated edition date cannot have independent verification
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="CG 20 10 99 99"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=self.cov, endorsements=[end])
+        res = self.evaluator.evaluate(doc_set, [self.req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_VERIFICATION_UNSUPPORTED")
+
+    def test_adv_06_non_standard_form_provider_claims_not_detected_routes_to_human_review(self):
+        """Case 6: Non-standard proprietary form + provider claims NOT_DETECTED
+        -> REQUIRES_HUMAN_REVIEW (NON_STANDARD_ENDORSEMENT_FORM or MANUSCRIPT_VERIFICATION_UNSUPPORTED).
+        """
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="MANUSCRIPT-PROPRIETARY-2026",
+            named_entities=["General Contractor Corp"],
+            is_standard_form=False,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="full_text_inspection",
+            independent_integrity_verified=False,
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="MANUSCRIPT-PROPRIETARY-2026"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=self.cov, endorsements=[end])
+        res = self.evaluator.evaluate(doc_set, [self.req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertIn(finding.reason_code, ["NON_STANDARD_ENDORSEMENT_FORM", "MANUSCRIPT_VERIFICATION_UNSUPPORTED"])
+
+    def test_adv_07_missing_form_number_provider_claims_not_detected_routes_to_human_review(self):
+        """Case 7: Missing form number (None) + provider claims NOT_DETECTED
+        -> REQUIRES_HUMAN_REVIEW (MANUSCRIPT_VERIFICATION_UNSUPPORTED or ENDORSEMENT_FORM_UNCERTAIN).
+        """
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number=None,
+            named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=False,
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="Additional Insured Clause"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=self.cov, endorsements=[end])
+        res = self.evaluator.evaluate(doc_set, [self.req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertIn(finding.reason_code, ["MANUSCRIPT_VERIFICATION_UNSUPPORTED", "ENDORSEMENT_FORM_UNCERTAIN"])
+
+    def test_adv_08_uncertain_manuscript_status_routes_to_human_review(self):
+        """Case 8: Uncertain manuscript classification ('UNCERTAIN')
+        -> REQUIRES_HUMAN_REVIEW (ENDORSEMENT_FORM_UNCERTAIN).
+        """
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="UNCERTAIN",
+            manuscript_verification_basis=None,
+            independent_integrity_verified=False,
+            confidence=0.95,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="CG 20 10 04 13"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=self.cov, endorsements=[end])
+        res = self.evaluator.evaluate(doc_set, [self.req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "ENDORSEMENT_FORM_UNCERTAIN")
+
+    def test_adv_09_restrictive_clause_outside_provider_quoted_text_routes_to_restriction_detected(self):
+        """Case 9: Restrictive clause outside the AI-quoted text on another page
+        -> pipeline full text scan catches it -> REQUIRES_HUMAN_REVIEW (MANUSCRIPT_RESTRICTION_DETECTED).
+        """
+        inspection = PDFDocumentInspection(
+            document_id="TEST-DOC-ADV-09",
+            filename="endorsement_multipage.pdf",
+            file_size_bytes=2000,
+            content_hash_sha256="abc_adv_09",
+            classified_type=DocumentType.ENDORSEMENT,
+            classification_confidence=0.95,
+            classification_reason="multipage endorsement",
+            page_count=2,
+            processing_status=DocumentProcessingStatus.PROCESSED,
+            pages=[
+                PDFPageInspection(
+                    page_number=1,
+                    text_content="Page 1: COMMERCIAL GENERAL LIABILITY CG 20 10 04 13 Additional Insured",
+                    width_pts=612.0,
+                    height_pts=792.0,
+                    content_hash_sha256="p1_hash",
+                ),
+                PDFPageInspection(
+                    page_number=2,
+                    text_content="Page 2: General Provisions. Residential operations are excluded from coverage under this policy.",
+                    width_pts=612.0,
+                    height_pts=792.0,
+                    content_hash_sha256="p2_hash",
+                ),
+            ],
+        )
+        raw_extraction = RawInsuranceExtraction(
+            document_type="endorsement",
+            endorsements=[
+                RawEndorsement(
+                    endorsement_type="additional_insured",
+                    form_number="CG 20 10 04 13",
+                    is_standard_form=True,
+                    manuscript_clause_detected=False,  # Quote on page 1 only; claims clean
+                    manuscript_status="NOT_DETECTED",
+                    manuscript_verification_basis="unmodified_standard_form",
+                    confidence=0.95,
+                    evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13 Additional Insured",
+                    ),
+                )
+            ],
+            is_document_set_complete=True,
+        )
+        pipeline = ExtractionPipelineService(
+            extraction_provider=MockExtractionProvider(canned_response=raw_extraction)
+        )
+        result = pipeline.process_inspection(inspection, subcontractor_id="SUB-ADV-09")
+        doc_set = result.document_set
+        self.assertIsNotNone(doc_set)
+        end = doc_set.endorsements[0]
+        self.assertTrue(end.manuscript_clause_detected)
+        self.assertEqual(end.manuscript_status, "DETECTED")
+
+        eval_res = self.evaluator.evaluate(doc_set, [self.req], self.eval_date)
+        finding = eval_res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_RESTRICTION_DETECTED")
+
+    def test_adv_10_clean_recognized_form_without_independent_integrity_routes_to_human_review(self):
+        """Case 10: Clean recognized standard form without independent integrity verification mechanism
+        -> REQUIRES_HUMAN_REVIEW (MANUSCRIPT_VERIFICATION_UNSUPPORTED).
+        """
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=False,  # No independent verification
+            confidence=0.99,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=self.cov, endorsements=[end])
+        res = self.evaluator.evaluate(doc_set, [self.req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(finding.reason_code, "MANUSCRIPT_VERIFICATION_UNSUPPORTED")
+        self.assertTrue(finding.requires_human_review)
+
+    def test_adv_11_positive_control_clean_recognized_form_with_independent_integrity_complies(self):
+        """Case 11 (Positive Control): Clean recognized standard form WITH independent integrity verification mechanism
+        -> COMPLIANT (ENDORSEMENT_VERIFIED).
+        """
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            named_entities=["General Contractor Corp"],
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,  # Independent verification mechanism verified standard form
+            confidence=0.99,
+            extraction_status=ExtractionStatus.EXTRACTED,
+            evidence=make_evidence(doc_type=DocumentType.ENDORSEMENT, text="COMMERCIAL GENERAL LIABILITY CG 20 10 04 13"),
+        )
+        doc_set = sample_subcontractor_document_set(gl_coverage=self.cov, endorsements=[end])
+        res = self.evaluator.evaluate(doc_set, [self.req], self.eval_date)
+        finding = res.findings[0]
+        self.assertEqual(finding.status, ComplianceStatus.COMPLIANT)
+        self.assertEqual(finding.reason_code, "ENDORSEMENT_VERIFIED")
+        self.assertFalse(finding.requires_human_review)
 
 
 if __name__ == "__main__":

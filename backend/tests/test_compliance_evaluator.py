@@ -352,6 +352,7 @@ class TestComplianceEvaluator(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             evidence=make_evidence(
                 doc_id="doc_endorsement_001",
                 doc_type=DocumentType.ENDORSEMENT,

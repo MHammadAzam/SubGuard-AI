@@ -196,7 +196,11 @@ class EndorsementExtraction(BaseModel):
     )
     manuscript_verification_basis: Optional[str] = Field(
         default=None,
-        description="Defensible verification basis for negative manuscript determination: e.g. 'unmodified_standard_form', 'full_text_inspection', or None if unverified"
+        description="Provider-asserted verification basis for negative manuscript determination: e.g. 'unmodified_standard_form', 'full_text_inspection', or None if unverified"
+    )
+    independent_integrity_verified: bool = Field(
+        default=False,
+        description="True ONLY if an independent, trusted document-integrity verification mechanism has verified that the physical document is an authentic, unmodified standard form"
     )
     effective_date: Optional[date] = Field(
         default=None,

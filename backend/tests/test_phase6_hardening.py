@@ -188,6 +188,9 @@ class TestPhase6Hardening(unittest.TestCase):
         doc_set = pipeline_result.document_set
         self.assertIsNotNone(doc_set)
 
+        # Mark independent integrity verified to simulate verified unmodified standard form
+        doc_set.endorsements[0].independent_integrity_verified = True
+
         end = doc_set.endorsements[0]
         self.assertIsNotNone(end.evidence)
         self.assertEqual(end.extraction_status, ExtractionStatus.EXTRACTED)
@@ -443,6 +446,7 @@ class TestPhase6Hardening(unittest.TestCase):
             manuscript_clause_detected=False,
             manuscript_status="NOT_DETECTED",
             manuscript_verification_basis="unmodified_standard_form",
+            independent_integrity_verified=True,
             evidence=ev,
             extraction_status=ExtractionStatus.EXTRACTED,
         )

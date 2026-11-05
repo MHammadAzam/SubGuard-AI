@@ -140,6 +140,17 @@ class TestPipelineComplianceE2E(unittest.TestCase):
             ),
         ]
 
+        # Unverified pipeline output routes to REQUIRES_HUMAN_REVIEW due to manuscript trust boundary
+        unverified_result = self.evaluator.evaluate(
+            document_set=pipeline_result.document_set,
+            requirements=requirements,
+            evaluation_date=self.evaluation_date,
+        )
+        self.assertEqual(unverified_result.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertEqual(unverified_result.findings[3].reason_code, "MANUSCRIPT_VERIFICATION_UNSUPPORTED")
+
+        # Independent integrity verification confirms authentic standard form -> COMPLIANT
+        pipeline_result.document_set.endorsements[0].independent_integrity_verified = True
         review_result = self.evaluator.evaluate(
             document_set=pipeline_result.document_set,
             requirements=requirements,
@@ -549,13 +560,18 @@ class TestPipelineComplianceE2E(unittest.TestCase):
         end = doc_set.endorsements[0]
         self.assertEqual(end.confidence, 0.95)
 
-        # 2. Verify compliance result is COMPLIANT
+        # 2. Verify compliance result routes to human review if integrity is unverified,
+        # but COMPLIANT when independent integrity verification is confirmed.
         req = InsuranceRequirement(
             requirement_id="REQ_AI_CONF",
             rule_type=RequirementType.ENDORSEMENT_PRESENCE,
             description="Additional Insured required",
             required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
         )
+        unverified_review = self.evaluator.evaluate(doc_set, [req], self.evaluation_date)
+        self.assertEqual(unverified_review.findings[0].reason_code, "MANUSCRIPT_VERIFICATION_UNSUPPORTED")
+
+        doc_set.endorsements[0].independent_integrity_verified = True
         review_result = self.evaluator.evaluate(doc_set, [req], self.evaluation_date)
 
         self.assertEqual(review_result.overall_status, ComplianceStatus.COMPLIANT)
@@ -598,7 +614,8 @@ class TestPipelineComplianceE2E(unittest.TestCase):
         # 1. Verify confidence is None and no TypeError occurs during processing
         self.assertIsNone(doc_set.endorsements[0].confidence)
 
-        # 2. Subcase A: With verified evidence quote on page, evaluation passes without confidence penalty
+        # 2. Subcase A: With verified evidence quote on page and independent integrity verification, evaluation passes
+        doc_set.endorsements[0].independent_integrity_verified = True
         req = InsuranceRequirement(
             requirement_id="REQ_AI_CONF",
             rule_type=RequirementType.ENDORSEMENT_PRESENCE,

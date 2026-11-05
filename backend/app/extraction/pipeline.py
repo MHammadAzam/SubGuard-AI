@@ -607,6 +607,7 @@ class ExtractionPipelineService:
                 manuscript_clause_detected=manuscript_detected,
                 manuscript_status=manuscript_status,
                 manuscript_verification_basis=verification_basis,
+                independent_integrity_verified=False,  # Provider extraction cannot independently verify document integrity
                 restriction_description=restriction_desc,
                 restriction_reason_code=restriction_code,
                 effective_date=eff_val.date if eff_val else None,

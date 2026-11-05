@@ -1289,15 +1289,15 @@ def evaluate_endorsement_presence(
             evidence=evidence_list,
         )
 
-    # 8b. Multi-endorsement check: Negative manuscript classification ('NOT_DETECTED') requires a defensible verification basis
-    # A provider returning NOT_DETECTED without defensible proof/basis cannot be accepted as verified evidence.
+    # 8b. Multi-endorsement check: Negative manuscript classification ('NOT_DETECTED') requires independent verification
+    # Provider assertions (e.g. 'unmodified_standard_form' or 'full_text_inspection') cannot independently prove absence.
+    # In the absence of an independent document-integrity verification mechanism, conservative fallback is REQUIRES_HUMAN_REVIEW.
     unsupported_negative_ends = [
         e for e in valid_endorsements
         if e.manuscript_status == "NOT_DETECTED"
-        and (
-            not getattr(e, "manuscript_verification_basis", None)
-            or e.manuscript_verification_basis not in ("unmodified_standard_form", "full_text_inspection")
-            or not is_recognized_standard_form(e.form_number)
+        and not (
+            getattr(e, "independent_integrity_verified", False) is True
+            and is_recognized_standard_form(e.form_number)
         )
     ]
     if unsupported_negative_ends:

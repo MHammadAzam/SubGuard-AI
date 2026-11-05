@@ -2034,5 +2034,323 @@ class Phase7326ExceptionChainTests(unittest.TestCase):
         self.assertTrue(details["message"].endswith("... [truncated]"))
 
 
+class Phase7327JsonModeCompatibilityTests(unittest.TestCase):
+    """Offline regression tests for Phase 7.3.2.7 explicit JSON mode configuration & compatibility."""
+
+    def _make_dummy_pages(self):
+        return [
+            PDFPageInspection(
+                page_number=1,
+                text_content="CERTIFICATE OF LIABILITY INSURANCE\nPRODUCER: Agent\nINSURED: Subcontractor Inc",
+                width_pts=612.0,
+                height_pts=792.0,
+            )
+        ]
+
+    def _make_valid_extraction_json(self):
+        return json.dumps({
+            "document_type": "coi",
+            "named_insured": {"name": "Subcontractor Inc", "evidence": None, "confidence": 1.0},
+            "certificate_holder": {"name": "General Contractor LLC", "evidence": None, "confidence": 1.0},
+            "producer": {"name": "Insurance Agency", "evidence": None, "confidence": 1.0},
+            "insurers": ["Travelers Indemnity Co"],
+            "coverages": [
+                {
+                    "coverage_type": "general_liability",
+                    "policy_number": "GL123456",
+                    "effective_date": "01/01/2025",
+                    "expiration_date": "01/01/2026",
+                    "each_occurrence": "$1,000,000",
+                    "general_aggregate": "$2,000,000",
+                    "evidence": None,
+                    "confidence": 1.0,
+                }
+            ],
+            "endorsements": [],
+            "raw_contradictions": [],
+            "is_document_set_complete": True,
+        })
+
+    def test_1_default_json_mode_remains_enabled(self):
+        """1. Default JSON mode remains enabled without explicit configuration."""
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock(message=MagicMock(content=self._make_valid_extraction_json()))]
+        mock_client.chat.completions.create.return_value = mock_resp
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client)
+        self.assertTrue(provider.json_mode)
+
+        provider.extract_insurance_data("doc-1", self._make_dummy_pages())
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertIn("response_format", call_kwargs)
+        self.assertEqual(call_kwargs["response_format"], {"type": "json_object"})
+
+    def test_2_explicit_json_mode_enabled(self):
+        """2. Explicit JSON mode enabled via argument or string."""
+        for flag in [True, "enabled", "ENABLED", "true", "True", "1"]:
+            mock_client = MagicMock()
+            mock_resp = MagicMock()
+            mock_resp.choices = [MagicMock(message=MagicMock(content=self._make_valid_extraction_json()))]
+            mock_client.chat.completions.create.return_value = mock_resp
+
+            provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, json_mode=flag)
+            self.assertTrue(provider.json_mode)
+
+            provider.extract_insurance_data("doc-1", self._make_dummy_pages())
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            self.assertIn("response_format", call_kwargs)
+            self.assertEqual(call_kwargs["response_format"], {"type": "json_object"})
+
+    def test_3_explicit_json_mode_disabled(self):
+        """3. Explicit JSON mode disabled via argument or string."""
+        for flag in [False, "disabled", "DISABLED", "false", "False", "0", "off"]:
+            provider = OpenRouterExtractionProvider(api_key="test-key", json_mode=flag)
+            self.assertFalse(provider.json_mode)
+
+    def test_4_disabled_mode_completely_omits_response_format(self):
+        """4. Disabled mode completely omits response_format rather than passing null or None."""
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock(message=MagicMock(content=self._make_valid_extraction_json()))]
+        mock_client.chat.completions.create.return_value = mock_resp
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, json_mode=False)
+        provider.extract_insurance_data("doc-1", self._make_dummy_pages())
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertNotIn("response_format", call_kwargs)
+
+    def test_5_all_other_request_parameters_remain_identical(self):
+        """5. All other request parameters remain identical between enabled and disabled modes."""
+        captured_kwargs = {}
+
+        def record_kwargs(mode, **kwargs):
+            captured_kwargs[mode] = kwargs
+            mock_resp = MagicMock()
+            mock_resp.choices = [MagicMock(message=MagicMock(content=self._make_valid_extraction_json()))]
+            return mock_resp
+
+        # Enabled call
+        mock_client_enabled = MagicMock()
+        mock_client_enabled.chat.completions.create.side_effect = lambda **kw: record_kwargs("enabled", **kw)
+        provider_enabled = OpenRouterExtractionProvider(api_key="test-key", client=mock_client_enabled, json_mode=True)
+        provider_enabled.extract_insurance_data("doc-1", self._make_dummy_pages(), timeout_seconds=30.0)
+
+        # Disabled call
+        mock_client_disabled = MagicMock()
+        mock_client_disabled.chat.completions.create.side_effect = lambda **kw: record_kwargs("disabled", **kw)
+        provider_disabled = OpenRouterExtractionProvider(api_key="test-key", client=mock_client_disabled, json_mode=False)
+        provider_disabled.extract_insurance_data("doc-1", self._make_dummy_pages(), timeout_seconds=30.0)
+
+        enabled_kw = captured_kwargs["enabled"]
+        disabled_kw = captured_kwargs["disabled"]
+
+        # Only difference must be response_format
+        self.assertIn("response_format", enabled_kw)
+        self.assertNotIn("response_format", disabled_kw)
+
+        # Remove response_format and compare all other parameters
+        enabled_without_rf = {k: v for k, v in enabled_kw.items() if k != "response_format"}
+        self.assertEqual(enabled_without_rf, disabled_kw)
+        self.assertEqual(enabled_kw["model"], disabled_kw["model"])
+        self.assertEqual(enabled_kw["temperature"], disabled_kw["temperature"])
+        self.assertEqual(enabled_kw["timeout"], disabled_kw["timeout"])
+        self.assertEqual(enabled_kw["messages"], disabled_kw["messages"])
+
+    def test_6_both_modes_use_identical_downstream_validation(self):
+        """6. Both modes use identical downstream validation pipeline and produce identical schemas."""
+        valid_json = self._make_valid_extraction_json()
+        fenced_json = f"```json\n{valid_json}\n```"
+
+        for content_text in [valid_json, fenced_json]:
+            # Enabled mode
+            mock_client_en = MagicMock()
+            mock_client_en.chat.completions.create.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content=content_text))]
+            )
+            provider_en = OpenRouterExtractionProvider(api_key="test-key", client=mock_client_en, json_mode=True)
+            res_en = provider_en.extract_insurance_data("doc-1", self._make_dummy_pages())
+
+            # Disabled mode
+            mock_client_dis = MagicMock()
+            mock_client_dis.chat.completions.create.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content=content_text))]
+            )
+            provider_dis = OpenRouterExtractionProvider(api_key="test-key", client=mock_client_dis, json_mode=False)
+            res_dis = provider_dis.extract_insurance_data("doc-1", self._make_dummy_pages())
+
+            self.assertEqual(res_en.document_type, res_dis.document_type)
+            self.assertEqual(res_en.named_insured.name, res_dis.named_insured.name)
+            self.assertEqual(res_en.coverages[0].each_occurrence, res_dis.coverages[0].each_occurrence)
+
+    def test_7_invalid_json_fails_safely(self):
+        """7. Malformed/invalid JSON fails safely in both modes with ExtractionSchemaValidationError."""
+        for mode in [True, False]:
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content="Here is the certificate: {not a valid json!"))]
+            )
+            provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, json_mode=mode)
+
+            with self.assertRaises(ExtractionSchemaValidationError) as ctx:
+                provider.extract_insurance_data("doc-1", self._make_dummy_pages())
+            self.assertEqual(ctx.exception.error_code, "invalid_json")
+
+    def test_8_pydantic_validation_failures_fail_safely(self):
+        """8. Non-conforming schema payload fails safely in both modes."""
+        invalid_schema_json = json.dumps({"document_type": "coi", "named_insured": "ShouldBeDictNotString"})
+
+        for mode in [True, False]:
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content=invalid_schema_json))]
+            )
+            provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, json_mode=mode)
+
+            with self.assertRaises(ExtractionSchemaValidationError) as ctx:
+                provider.extract_insurance_data("doc-1", self._make_dummy_pages())
+            self.assertEqual(ctx.exception.error_code, "schema_validation_failed")
+
+    def test_9_no_automatic_fallback_occurs(self):
+        """9. No automatic fallback from enabled to disabled mode occurs on response_format error."""
+        import openai
+        mock_client = MagicMock()
+        err = openai.BadRequestError(
+            message="Error code: 400 - response_format is not supported for this model",
+            response=MagicMock(status_code=400, headers={"cf-ray": "ray-test-rf"}),
+            body={"error": {"message": "response_format is not supported for this model", "param": "response_format"}},
+        )
+        mock_client.chat.completions.create.side_effect = err
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, json_mode=True, max_retries=3)
+
+        with self.assertRaises(ExtractionInvalidRequestError) as ctx:
+            provider.extract_insurance_data("doc-1", self._make_dummy_pages())
+
+        self.assertEqual(ctx.exception.error_code, "unsupported_response_format")
+        # Ensure json_mode was not silently mutated to False
+        self.assertTrue(provider.json_mode)
+
+    def test_10_no_automatic_retry_occurs(self):
+        """10. No automatic retry occurs on unsupported response_format error."""
+        import openai
+        mock_client = MagicMock()
+        err = openai.BadRequestError(
+            message="Error code: 400 - response_format is not supported for this model",
+            response=MagicMock(status_code=400, headers={"cf-ray": "ray-test-rf"}),
+            body={"error": {"message": "response_format is not supported for this model", "param": "response_format"}},
+        )
+        mock_client.chat.completions.create.side_effect = err
+
+        provider = OpenRouterExtractionProvider(api_key="test-key", client=mock_client, json_mode=True, max_retries=3)
+
+        with self.assertRaises(ExtractionInvalidRequestError):
+            provider.extract_insurance_data("doc-1", self._make_dummy_pages())
+
+        # Exactly 1 call was attempted (no retry)
+        self.assertEqual(mock_client.chat.completions.create.call_count, 1)
+
+    def test_11_document_level_error_attribution_survives_summary_deduplication(self):
+        """11. Document-level error attribution survives summary deduplication without hiding documents."""
+        import datetime
+        from pathlib import Path
+        from evaluation.runners.scenario_runner import run_single_scenario
+        from evaluation.schemas.ground_truth import ScenarioGroundTruth, DocumentGroundTruth, DocumentSourceType
+        from app.schemas.insurance import ComplianceStatus, DocumentType
+
+        scenario = ScenarioGroundTruth(
+            scenario_id="SCEN-ATTRIB-TEST",
+            title="Attribution Test",
+            description="Multi-document error test",
+            subcontractor_id="SUB-1",
+            evaluation_date=datetime.date(2025, 6, 1),
+            document_ids=["DOC1", "DOC2"],
+            documents=[
+                DocumentGroundTruth(
+                    document_id="DOC1",
+                    filename="doc1_coi.pdf",
+                    source_type=DocumentSourceType.SYNTHETIC,
+                    document_type=DocumentType.COI,
+                    page_count=1,
+                ),
+                DocumentGroundTruth(
+                    document_id="DOC2",
+                    filename="doc2_endorsement.pdf",
+                    source_type=DocumentSourceType.SYNTHETIC,
+                    document_type=DocumentType.ENDORSEMENT,
+                    page_count=1,
+                ),
+            ],
+            requirements=[],
+            expected_findings=[],
+            expected_overall_status=ComplianceStatus.COMPLIANT,
+            expected_requires_human_review=False,
+        )
+
+        mock_pipeline_service = MagicMock()
+        shared_err = "OpenRouter invalid request/model error (HTTP 400): Error code: 400"
+
+        # Both documents fail with the same error but distinct request IDs
+        def side_effect_process(inspection, subcontractor_id):
+            doc_id = inspection.document_id
+            ray_id = "ray-doc1-111" if "DOC1" in doc_id else "ray-doc2-222"
+            return MagicMock(
+                document_set=None,
+                processing_status="error",
+                errors=[shared_err],
+                error_type="ExtractionInvalidRequestError",
+                error_message=shared_err,
+                status_code=400,
+                error_code="http_400",
+                request_id=ray_id,
+            )
+
+        mock_pipeline_service.process_inspection.side_effect = side_effect_process
+
+        mock_pdf_processor = MagicMock()
+        mock_pdf_processor.process_pdf.side_effect = lambda b, document_id: MagicMock(document_id=document_id)
+
+        with patch("pathlib.Path.exists", return_value=True), \
+             patch("builtins.open", unittest.mock.mock_open(read_data=b"%PDF-1.4 dummy")):
+            result = run_single_scenario(
+                scenario=scenario,
+                fixtures_dir=Path("/fake/fixtures"),
+                pdf_processor=mock_pdf_processor,
+                pipeline_service=mock_pipeline_service,
+                evaluator=MagicMock(),
+            )
+
+        # Summary error is collapsed (not duplicated)
+        self.assertEqual(result.error_message.count("OpenRouter invalid request/model error"), 1)
+
+        # Both individual documents are preserved in document_failures
+        self.assertEqual(len(result.document_failures), 2)
+        self.assertEqual(result.document_failures[0]["document_id"], "DOC1")
+        self.assertEqual(result.document_failures[0]["filename"], "doc1_coi.pdf")
+        self.assertEqual(result.document_failures[0]["request_id"], "ray-doc1-111")
+
+        self.assertEqual(result.document_failures[1]["document_id"], "DOC2")
+        self.assertEqual(result.document_failures[1]["filename"], "doc2_endorsement.pdf")
+        self.assertEqual(result.document_failures[1]["request_id"], "ray-doc2-222")
+
+    def test_12_existing_configuration_remains_backward_compatible(self):
+        """12. Existing configuration remains fully backward-compatible."""
+        from app.extraction.providers import get_extraction_provider
+        from evaluation.runners.benchmark import BenchmarkRunner
+
+        # Factory without json_mode defaults to enabled
+        provider = get_extraction_provider("openrouter", api_key="test-key")
+        self.assertTrue(provider.json_mode)
+
+        # Factory with explicit json_mode="disabled"
+        provider_dis = get_extraction_provider("openrouter", api_key="test-key", json_mode="disabled")
+        self.assertFalse(provider_dis.json_mode)
+
+        # BenchmarkRunner defaults without breaking
+        runner = BenchmarkRunner(provider_name="openrouter", openrouter_api_key="test-key")
+        self.assertTrue(runner.provider.json_mode)
+
+
 if __name__ == "__main__":
     unittest.main()

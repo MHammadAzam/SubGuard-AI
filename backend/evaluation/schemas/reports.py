@@ -277,6 +277,7 @@ class ScenarioEvaluationResult(BaseModel):
     error_code: Optional[str] = None
     request_id: Optional[str] = None
     findings_results: List[ScenarioFindingResult] = Field(default_factory=list)
+    document_failures: List[Dict[str, Any]] = Field(default_factory=list)
     execution_time_seconds: float = 0.0
 
 

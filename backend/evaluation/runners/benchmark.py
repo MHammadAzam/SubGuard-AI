@@ -19,7 +19,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from app.documents.processor import PDFProcessor
@@ -423,6 +423,7 @@ class BenchmarkRunner:
         gemini_api_key: Optional[str] = None,
         openrouter_api_key: Optional[str] = None,
         fixtures_dir: Optional[Path] = None,
+        json_mode: Union[bool, str] = "enabled",
     ):
         self.provider_name = provider_name
         if provider_name == "gemini":
@@ -441,7 +442,11 @@ class BenchmarkRunner:
         if provider_name == "gemini":
             self.provider = GeminiExtractionProvider(api_key=gemini_api_key, model_name=self.model_name)
         elif provider_name == "openrouter":
-            self.provider = OpenRouterExtractionProvider(api_key=openrouter_api_key, model_name=self.model_name)
+            self.provider = OpenRouterExtractionProvider(
+                api_key=openrouter_api_key,
+                model_name=self.model_name,
+                json_mode=json_mode,
+            )
         else:
             self.provider = BenchmarkMockProvider()
 
@@ -709,6 +714,7 @@ def main():
     parser.add_argument("--max-documents", type=int, default=None, help="Maximum number of documents to evaluate")
     parser.add_argument("--output-dir", default="evaluation/reports", help="Directory for output reports")
     parser.add_argument("--format", default="both", choices=["both", "json", "table"], help="Output format")
+    parser.add_argument("--json-mode", default="enabled", choices=["enabled", "disabled"], help="OpenRouter JSON mode: 'enabled' (default) or 'disabled'")
     args = parser.parse_args()
 
     # Load dataset
@@ -717,7 +723,11 @@ def main():
     else:
         dataset = build_default_synthetic_dataset()
 
-    runner = BenchmarkRunner(provider_name=args.provider, model_name=args.model)
+    runner = BenchmarkRunner(
+        provider_name=args.provider,
+        model_name=args.model,
+        json_mode=args.json_mode,
+    )
     report = runner.run_benchmark(dataset, max_documents=args.max_documents)
 
     output_dir = Path(args.output_dir)

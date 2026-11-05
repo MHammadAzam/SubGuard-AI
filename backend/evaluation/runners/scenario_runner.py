@@ -496,6 +496,7 @@ def run_single_scenario(
         doc_types_submitted: List[DocumentType] = []
         pipeline_errors: List[str] = []
         failed_pipeline_results: List[Any] = []
+        document_failures: List[Dict[str, Any]] = []
 
         for doc_gt in scenario.documents:
             pdf_path = scen_dir / doc_gt.filename
@@ -526,6 +527,17 @@ def run_single_scenario(
             elif pipeline_res.errors or pipeline_res.error_message:
                 pipeline_errors.extend(pipeline_res.errors or [pipeline_res.error_message])
                 failed_pipeline_results.append(pipeline_res)
+                doc_err_msg = pipeline_res.error_message or (pipeline_res.errors[0] if pipeline_res.errors else "Unknown pipeline error")
+                document_failures.append({
+                    "document_id": doc_gt.document_id,
+                    "filename": doc_gt.filename,
+                    "document_type": doc_gt.document_type.value if hasattr(doc_gt.document_type, "value") else str(doc_gt.document_type),
+                    "error_type": getattr(pipeline_res, "error_type", None) or "ExtractionProviderFailure",
+                    "error_message": doc_err_msg,
+                    "status_code": getattr(pipeline_res, "status_code", None),
+                    "error_code": getattr(pipeline_res, "error_code", None),
+                    "request_id": getattr(pipeline_res, "request_id", None),
+                })
 
         # If all documents in the scenario failed extraction due to pipeline/provider errors,
         # fail the scenario explicitly rather than evaluating compliance on empty documents.
@@ -560,6 +572,7 @@ def run_single_scenario(
                 status_code=primary_status_code,
                 error_code=primary_error_code,
                 request_id=primary_request_id,
+                document_failures=document_failures,
                 execution_time_seconds=elapsed,
             )
 
@@ -684,6 +697,7 @@ def execute_cohort_benchmark(
     provider_name: str = "mock",
     model_name: Optional[str] = None,
     max_retries: int = 3,
+    json_mode: str = "enabled",
     extraction_provider: Optional[BaseExtractionProvider] = None,
 ) -> ScenarioBenchmarkReport:
     """Run full benchmark cohort, record metrics, and generate output reports."""
@@ -722,7 +736,12 @@ def execute_cohort_benchmark(
         active_provider = extraction_provider
     elif provider_name == "openrouter":
         from app.extraction.providers import get_extraction_provider
-        active_provider = get_extraction_provider("openrouter", model_name=model_name, max_retries=max_retries)
+        active_provider = get_extraction_provider(
+            "openrouter",
+            model_name=model_name,
+            max_retries=max_retries,
+            json_mode=json_mode,
+        )
     else:
         active_provider = ScenarioBenchmarkMockProvider()
 
@@ -796,6 +815,8 @@ def execute_cohort_benchmark(
                 failure_dict["error_code"] = res.error_code
             if getattr(res, "request_id", None) is not None:
                 failure_dict["request_id"] = res.request_id
+            if getattr(res, "document_failures", None):
+                failure_dict["document_failures"] = res.document_failures
             failures.append(failure_dict)
 
     # 5. Compute metrics
@@ -808,6 +829,9 @@ def execute_cohort_benchmark(
     total_time = round(time.time() - start_total_time, 3)
     successful_count = sum(1 for r in results.values() if r.processing_status == "success")
     failed_count = len(failures)
+
+    env_meta = get_environment_metadata()
+    env_meta["json_mode"] = json_mode if provider_name == "openrouter" else "n/a"
 
     report = ScenarioBenchmarkReport(
         benchmark_id=benchmark_id,
@@ -828,7 +852,7 @@ def execute_cohort_benchmark(
         scenario_results=list(results.values()),
         execution_failures=failures,
         execution_time_seconds=total_time,
-        environment_metadata=get_environment_metadata(),
+        environment_metadata=env_meta,
     )
 
     # 6. Save reports
@@ -998,6 +1022,19 @@ def generate_markdown_report(report: ScenarioBenchmarkReport, md_path: Path) -> 
             lines.append(
                 f"| `{scen_id}` | `{err_type}` | {status} | `{err_code}` | `{req_id}` | {err_msg} |"
             )
+            doc_fails = fail.get("document_failures", [])
+            if len(doc_fails) > 1:
+                lines.append(f"| └─ **Documents ({len(doc_fails)})** | *Per-Document Attribution* | | | | |")
+                for df in doc_fails:
+                    d_id = df.get("document_id", "-")
+                    d_fn = df.get("filename", "-")
+                    d_et = df.get("error_type", "-")
+                    d_st = str(df.get("status_code", "-"))
+                    d_rid = df.get("request_id") or "-"
+                    d_msg = df.get("error_message", "-")
+                    lines.append(
+                        f"| &nbsp;&nbsp;&nbsp;&nbsp;• `{d_id}` (`{d_fn}`) | `{d_et}` | {d_st} | - | `{d_rid}` | {d_msg} |"
+                    )
 
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -1054,6 +1091,13 @@ def main() -> None:
         default=3,
         help="Maximum attempts per document (default: 3; set 1 to disable retries)",
     )
+    parser.add_argument(
+        "--json-mode",
+        type=str,
+        default="enabled",
+        choices=["enabled", "disabled"],
+        help="OpenRouter JSON mode: 'enabled' (default, sends response_format) or 'disabled' (omits response_format)",
+    )
     args = parser.parse_args()
 
     execute_cohort_benchmark(
@@ -1065,6 +1109,7 @@ def main() -> None:
         provider_name=args.provider,
         model_name=args.model,
         max_retries=args.max_retries,
+        json_mode=args.json_mode,
     )
 
 

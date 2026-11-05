@@ -353,6 +353,7 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
         max_retries: int = 3,
         client: Optional[Any] = None,
         allow_response_format_fallback: bool = False,
+        json_mode: Union[bool, str] = True,
     ):
         self._api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         chosen_model = model_name or self.DEFAULT_MODEL
@@ -373,6 +374,19 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
         self.max_retries = max(1, max_retries)
         self._injected_client = client
         self.allow_response_format_fallback = allow_response_format_fallback
+
+        # Resolve explicit JSON mode configuration (default: enabled)
+        env_json_mode = os.getenv("EXTRACTION_JSON_MODE")
+        if json_mode is not None:
+            if isinstance(json_mode, str):
+                self.json_mode: bool = json_mode.strip().lower() not in ("disabled", "false", "0", "no", "off")
+            else:
+                self.json_mode = bool(json_mode)
+        elif env_json_mode is not None:
+            clean_env = env_json_mode.strip().lower()
+            self.json_mode = clean_env not in ("disabled", "false", "0", "no", "off")
+        else:
+            self.json_mode = True
 
     @staticmethod
     def is_free_model(model: Optional[str]) -> bool:
@@ -553,7 +567,7 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
 
         last_error: Optional[Exception] = None
         backoff_seconds = 1.0
-        use_response_format = True
+        use_response_format = self.json_mode
 
         for attempt in range(1, self.max_retries + 1):
             try:

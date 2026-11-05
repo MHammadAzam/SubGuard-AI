@@ -1,7 +1,7 @@
 """Package marker and factory for extraction providers."""
 
 import os
-from typing import Optional
+from typing import Optional, Union
 
 from app.extraction.providers.base import (
     BaseExtractionProvider,
@@ -24,6 +24,7 @@ def get_extraction_provider(
     api_key: Optional[str] = None,
     model_name: Optional[str] = None,
     max_retries: int = 3,
+    json_mode: Union[bool, str] = True,
 ) -> BaseExtractionProvider:
     """Factory to retrieve the configured extraction provider."""
     name = (provider_name or os.getenv("EXTRACTION_PROVIDER", "mock")).strip().lower()
@@ -37,6 +38,7 @@ def get_extraction_provider(
             api_key=api_key,
             model_name=model_name or "nvidia/nemotron-3.5-super-vl:free",
             max_retries=max_retries,
+            json_mode=json_mode,
         )
     else:
         raise ValueError(f"Unsupported extraction provider: '{name}'. Supported: 'mock', 'gemini', 'openrouter'.")

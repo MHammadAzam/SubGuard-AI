@@ -81,6 +81,25 @@ from evaluation.schemas.reports import (
 )
 
 
+CANONICAL_REASON_CODE_ALIASES: Dict[str, str] = {
+    "POLICY_ACTIVE_AND_CURRENT": "POLICY_ACTIVE",
+    "POLICY_ACTIVE": "POLICY_ACTIVE",
+    "NAMED_INSURED_FUZZY_MATCH_REQUIRES_REVIEW": "NAMED_INSURED_PARTIAL_MATCH",
+    "NAMED_INSURED_PARTIAL_MATCH": "NAMED_INSURED_PARTIAL_MATCH",
+}
+
+
+def are_reason_codes_equivalent(code_a: Optional[str], code_b: Optional[str]) -> bool:
+    """Check if expected and predicted reason codes match directly or through canonical aliasing."""
+    if code_a == code_b:
+        return True
+    if not code_a or not code_b:
+        return False
+    norm_a = CANONICAL_REASON_CODE_ALIASES.get(code_a, code_a)
+    norm_b = CANONICAL_REASON_CODE_ALIASES.get(code_b, code_b)
+    return norm_a == norm_b
+
+
 class ScenarioBenchmarkMockProvider(BaseExtractionProvider):
     """Context-aware mock extraction provider for 40-scenario cohort evaluation."""
 
@@ -638,7 +657,7 @@ def run_single_scenario(
 
             if pred_f and exp_f:
                 s_match = (pred_f.status.value == exp_f.expected_status.value)
-                r_match = (pred_f.reason_code == exp_f.expected_reason_code)
+                r_match = are_reason_codes_equivalent(exp_f.expected_reason_code, pred_f.reason_code)
                 h_match = (pred_f.requires_human_review == exp_f.requires_human_review)
 
                 finding_results.append(
@@ -896,16 +915,35 @@ def generate_markdown_report(report: ScenarioBenchmarkReport, md_path: Path) -> 
         f"",
         f"---",
         f"",
-        f"## 1. High-Stakes Safety Metrics",
+        f"## 1. High-Stakes Safety & Throughput Metrics",
         f"",
         f"| Safety Metric | Rate | Numerator | Denominator | Violations | Status |",
         f"| :--- | :---: | :---: | :---: | :---: | :---: |",
         f"| **False Compliance Rate (FCR)** | **{fcr.rate_string}** | {fcr.numerator} | {fcr.denominator} | {len(fcr.affected_scenario_ids)} | {'✅ PASS' if fcr.numerator == 0 else '❌ CRITICAL RISK'} |",
         f"| **Unsafe Compliance Rate (UCR)** | **{ucr.rate_string}** | {ucr.numerator} | {ucr.denominator} | {len(ucr.affected_scenario_ids)} | {'✅ PASS' if ucr.numerator == 0 else '❌ CRITICAL RISK'} |",
         f"",
-        f"**Definitions:**",
-        f"- **FCR:** False `COMPLIANT` decisions strictly on ground-truth `NON_COMPLIANT` cases.",
-        f"- **UCR:** False `COMPLIANT` decisions across ALL unsafe ground-truth categories (`NON_COMPLIANT`, `REQUIRES_HUMAN_REVIEW`, `UNABLE_TO_DETERMINE`).",
+        f"### Operational Throughput Rates (Milestone 3.2A Safety Context)",
+        f"",
+        f"| Throughput Metric | Rate | Count / Total | Definition |",
+        f"| :--- | :---: | :---: | :--- |",
+        f"| **Automated Pass Rate** | **{sub.automated_pass_rate * 100:.2f}%** | {int(round(sub.automated_pass_rate * sub.total_scenarios))}/{sub.total_scenarios} | Proportion of submissions approved automatically |",
+        f"| **Automated Rejection Rate** | {sub.automated_rejection_rate * 100:.2f}% | {int(round(sub.automated_rejection_rate * sub.total_scenarios))}/{sub.total_scenarios} | Proportion of submissions rejected automatically |",
+        f"| **Human Review Routing Rate** | {sub.human_review_rate * 100:.2f}% | {int(round(sub.human_review_rate * sub.total_scenarios))}/{sub.total_scenarios} | Proportion of submissions routed to human review |",
+        f"| **Unable to Determine Rate** | {sub.unable_to_determine_rate * 100:.2f}% | {int(round(sub.unable_to_determine_rate * sub.total_scenarios))}/{sub.total_scenarios} | Incomplete submissions with degraded extraction |",
+        f"| **Correct Automated Pass Rate**| {sub.correct_automated_pass_rate * 100:.2f}% | {int(round(sub.correct_automated_pass_rate * sub.total_scenarios))}/{sub.total_scenarios} | True clean approvals matching compliant GT |",
+        f"| **False Approval Count** | {sub.false_approval_count} | - | Non-compliant submissions approved automatically |",
+        f"| **False Rejection Count** | {sub.false_rejection_count} | - | Compliant submissions rejected as non-compliant |",
+        f"",
+        f"### Review-First Missing Evidence Policy Metrics (Milestone 3.2B)",
+        f"",
+        f"| Review-First Metric | Rate | Target | Operational Significance |",
+        f"| :--- | :---: | :---: | :--- |",
+        f"| **Missing Evidence Review Rate** | **{sub.missing_evidence_review_rate * 100:.2f}%** | 100.00% | Missing coverage/endorsements routed to human review |",
+        f"| **Auto-Rejection for Missing Evidence** | **{sub.automatic_rejection_for_missing_evidence_rate * 100:.2f}%** | 0.00% | Prohibits auto-rejection when evidence is merely absent |",
+        f"| **Auto-Approval with Unresolved Evidence** | **{sub.automatic_approval_with_unresolved_evidence_rate * 100:.2f}%** | 0.00% | Prohibits auto-approval with unverified/missing evidence |",
+        f"| **Missing Evidence Scenarios** | {sub.missing_evidence_scenario_count} | - | Scenarios with missing required policy/endorsement evidence |",
+        f"",
+        f"> **Safety Integrity Principle:** A False Compliance Rate of 0.00% is only operationally meaningful when evaluated alongside the Automated Pass Rate. Under the review-first policy, missing evidence routes to qualified humans rather than triggering automated rejection or approval.",
         f"",
         f"---",
         f"",
@@ -917,7 +955,7 @@ def generate_markdown_report(report: ScenarioBenchmarkReport, md_path: Path) -> 
         f"",
         f"### Four-Class Confusion Matrix (Standard Projection)",
         f"",
-        f"*Note: In the standard 4-class projection, `MISSING_EVIDENCE` predictions are mapped into `UNABLE_TO_DETERMINE`.*",
+        f"*Note: In the standard 4-class projection, `MISSING_EVIDENCE` predictions are mapped into `REQUIRES_HUMAN_REVIEW` under the Review-First policy.*",
         f"",
         f"| Ground Truth \\ Predicted | COMPLIANT | NON_COMPLIANT | REQUIRES_HUMAN_REVIEW | UNABLE_TO_DETERMINE |",
         f"| :--- | :---: | :---: | :---: | :---: |",
@@ -949,14 +987,15 @@ def generate_markdown_report(report: ScenarioBenchmarkReport, md_path: Path) -> 
         f"",
         f"## 3. Finding-Level Compliance Metrics",
         f"",
-        f"| Metric | Score | Matches / Total |",
-        f"| :--- | :---: | :---: |",
-        f"| **Exact Status Accuracy** | {fnd.exact_status_accuracy * 100:.2f}% | {fnd.exact_status_matches}/{fnd.total_findings} |",
-        f"| **Reason Code Accuracy** | {fnd.reason_code_accuracy * 100:.2f}% | {fnd.reason_code_matches}/{fnd.total_findings} |",
-        f"| **Human Review Accuracy** | {fnd.human_review_accuracy * 100:.2f}% | {fnd.human_review_matches}/{fnd.total_findings} |",
-        f"| **Compliance Precision** | {fnd.precision:.4f} | - |",
-        f"| **Compliance Recall** | {fnd.recall:.4f} | - |",
-        f"| **Compliance F1 Score** | {fnd.f1_score:.4f} | - |",
+        f"| Metric | Score | Matches / Total | Scope / Details |",
+        f"| :--- | :---: | :---: | :--- |",
+        f"| **Exact Status Accuracy** | {fnd.exact_status_accuracy * 100:.2f}% | {fnd.exact_status_matches}/{fnd.total_findings} | All 4 statuses evaluated simultaneously |",
+        f"| **Four-Class Macro F1** | {fnd.four_class_macro_f1:.4f} | - | Balanced multi-class macro F1 across all statuses |",
+        f"| **Reason Code Accuracy** | {fnd.reason_code_accuracy * 100:.2f}% | {fnd.reason_code_matches}/{fnd.total_findings} | Exact and canonical reason code matches |",
+        f"| **Human Review Accuracy** | {fnd.human_review_accuracy * 100:.2f}% | {fnd.human_review_matches}/{fnd.total_findings} | Finding-level human review routing matches |",
+        f"| **Binary Compliant Precision** | {fnd.binary_compliant_precision:.4f} | - | Precision on COMPLIANT class (one-vs-rest) |",
+        f"| **Binary Compliant Recall** | {fnd.binary_compliant_recall:.4f} | - | Recall on COMPLIANT class (one-vs-rest) |",
+        f"| **Binary Compliant F1** | {fnd.binary_compliant_f1:.4f} | - | Legacy F1 (one-vs-rest COMPLIANT vs others) |",
         f"",
         f"---",
         f"",

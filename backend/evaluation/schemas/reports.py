@@ -186,6 +186,14 @@ class FindingMetricStats(BaseModel):
     reason_code_accuracy: float = 0.0
     human_review_accuracy: float = 0.0
 
+    # Milestone 3.2A Enhanced Multi-Class & Explicit Binary Metrics
+    four_class_status_accuracy: float = 0.0
+    four_class_macro_f1: float = 0.0
+    per_class_metrics: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+    binary_compliant_precision: float = 0.0
+    binary_compliant_recall: float = 0.0
+    binary_compliant_f1: float = 0.0
+
 
 class SubmissionMetricStats(BaseModel):
     """Aggregate submission-level multi-class compliance metrics."""
@@ -197,6 +205,21 @@ class SubmissionMetricStats(BaseModel):
     confusion_matrix_4class: Dict[str, Dict[str, int]] = Field(default_factory=dict)
     confusion_matrix_5class: Dict[str, Dict[str, int]] = Field(default_factory=dict)
     class_metrics: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+
+    # Milestone 3.2A Safety & Throughput Metrics
+    automated_pass_rate: float = 0.0
+    automated_rejection_rate: float = 0.0
+    human_review_rate: float = 0.0
+    unable_to_determine_rate: float = 0.0
+    correct_automated_pass_rate: float = 0.0
+    false_approval_count: int = 0
+    false_rejection_count: int = 0
+
+    # Milestone 3.2B Review-First Missing Evidence Metrics
+    missing_evidence_review_rate: float = 0.0
+    automatic_rejection_for_missing_evidence_rate: float = 0.0
+    automatic_approval_with_unresolved_evidence_rate: float = 0.0
+    missing_evidence_scenario_count: int = 0
 
 
 class HumanReviewMetricStats(BaseModel):
@@ -285,6 +308,7 @@ class ScenarioBenchmarkReport(BaseModel):
     """Complete benchmark execution report across a multi-document cohort."""
     model_config = {"protected_namespaces": ()}
 
+    report_schema_version: str = "1.2.0"
     benchmark_id: str
     timestamp: str
     manifest_version: str

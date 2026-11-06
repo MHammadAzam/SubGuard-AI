@@ -150,7 +150,7 @@ def calculate_submission_metrics(
         if gt_status in confusion_5 and raw_pred in confusion_5[gt_status]:
             confusion_5[gt_status][raw_pred] += 1
 
-        # 4-class recording (projecting missing_evidence -> unable_to_determine)
+        # 4-class recording (projecting non-4-class statuses into unable_to_determine)
         pred_4 = raw_pred if raw_pred in FOUR_CLASSES else ComplianceStatus.UNABLE_TO_DETERMINE.value
         if gt_status in confusion_4 and pred_4 in confusion_4[gt_status]:
             confusion_4[gt_status][pred_4] += 1
@@ -193,6 +193,68 @@ def calculate_submission_metrics(
         else 0.0
     )
 
+    # Milestone 3.2A Safety and Throughput Rates
+    automated_passes = sum(1 for sc in scenarios if results.get(sc.scenario_id) and results[sc.scenario_id].predicted_status == ComplianceStatus.COMPLIANT.value)
+    automated_rejections = sum(1 for sc in scenarios if results.get(sc.scenario_id) and results[sc.scenario_id].predicted_status == ComplianceStatus.NON_COMPLIANT.value)
+    human_reviews = sum(1 for sc in scenarios if results.get(sc.scenario_id) and results[sc.scenario_id].predicted_status in (ComplianceStatus.REQUIRES_HUMAN_REVIEW.value, ComplianceStatus.MISSING_EVIDENCE.value))
+    unable_count = sum(1 for sc in scenarios if results.get(sc.scenario_id) and results[sc.scenario_id].predicted_status == ComplianceStatus.UNABLE_TO_DETERMINE.value)
+
+    correct_automated_passes = sum(
+        1 for sc in scenarios
+        if sc.expected_overall_status == ComplianceStatus.COMPLIANT
+        and results.get(sc.scenario_id)
+        and results[sc.scenario_id].predicted_status == ComplianceStatus.COMPLIANT.value
+    )
+    false_approvals = sum(
+        1 for sc in scenarios
+        if sc.expected_overall_status != ComplianceStatus.COMPLIANT
+        and results.get(sc.scenario_id)
+        and results[sc.scenario_id].predicted_status == ComplianceStatus.COMPLIANT.value
+    )
+    false_rejections = sum(
+        1 for sc in scenarios
+        if sc.expected_overall_status == ComplianceStatus.COMPLIANT
+        and results.get(sc.scenario_id)
+        and results[sc.scenario_id].predicted_status == ComplianceStatus.NON_COMPLIANT.value
+    )
+
+    automated_pass_rate = round(automated_passes / total, 4) if total > 0 else 0.0
+    automated_rejection_rate = round(automated_rejections / total, 4) if total > 0 else 0.0
+    human_review_rate = round(human_reviews / total, 4) if total > 0 else 0.0
+    unable_to_determine_rate = round(unable_count / total, 4) if total > 0 else 0.0
+    correct_automated_pass_rate = round(correct_automated_passes / total, 4) if total > 0 else 0.0
+
+    # Milestone 3.2B Review-First Missing Evidence Metrics
+    me_scenario_count = 0
+    me_reviewed_count = 0
+    me_auto_rejected_count = 0
+    me_auto_approved_count = 0
+
+    for sc in scenarios:
+        res = results.get(sc.scenario_id)
+        if not res or res.processing_status != "success":
+            continue
+
+        has_me = (res.predicted_status == ComplianceStatus.MISSING_EVIDENCE.value) or any(
+            f.predicted_status == ComplianceStatus.MISSING_EVIDENCE.value for f in res.findings_results
+        )
+        if has_me:
+            me_scenario_count += 1
+            if res.predicted_requires_human_review:
+                me_reviewed_count += 1
+            # Check if auto-rejected without any confirmed hard failure finding
+            has_confirmed_violation = any(
+                f.predicted_status == ComplianceStatus.NON_COMPLIANT.value for f in res.findings_results
+            )
+            if res.predicted_status == ComplianceStatus.NON_COMPLIANT.value and not has_confirmed_violation:
+                me_auto_rejected_count += 1
+            if res.predicted_status == ComplianceStatus.COMPLIANT.value:
+                me_auto_approved_count += 1
+
+    me_review_rate = round(me_reviewed_count / me_scenario_count, 4) if me_scenario_count > 0 else 1.0
+    auto_rejection_for_me_rate = round(me_auto_rejected_count / me_scenario_count, 4) if me_scenario_count > 0 else 0.0
+    auto_approval_for_me_rate = round(me_auto_approved_count / me_scenario_count, 4) if me_scenario_count > 0 else 0.0
+
     return SubmissionMetricStats(
         total_scenarios=total,
         exact_status_matches=exact_matches,
@@ -202,13 +264,24 @@ def calculate_submission_metrics(
         confusion_matrix_4class=confusion_4,
         confusion_matrix_5class=confusion_5,
         class_metrics=class_metrics,
+        automated_pass_rate=automated_pass_rate,
+        automated_rejection_rate=automated_rejection_rate,
+        human_review_rate=human_review_rate,
+        unable_to_determine_rate=unable_to_determine_rate,
+        correct_automated_pass_rate=correct_automated_pass_rate,
+        false_approval_count=false_approvals,
+        false_rejection_count=false_rejections,
+        missing_evidence_review_rate=me_review_rate,
+        automatic_rejection_for_missing_evidence_rate=auto_rejection_for_me_rate,
+        automatic_approval_with_unresolved_evidence_rate=auto_approval_for_me_rate,
+        missing_evidence_scenario_count=me_scenario_count,
     )
 
 
 def calculate_finding_metrics(
     finding_results: List[ScenarioFindingResult],
 ) -> FindingMetricStats:
-    """Calculate aggregate finding-level accuracy, reason-code match, and F1."""
+    """Calculate aggregate finding-level accuracy, reason-code match, four-class macro F1, and binary F1."""
     total = len(finding_results)
     if total == 0:
         return FindingMetricStats()
@@ -217,27 +290,67 @@ def calculate_finding_metrics(
     reason_matches = sum(1 for f in finding_results if f.reason_code_matched)
     hr_matches = sum(1 for f in finding_results if f.human_review_matched)
 
-    # Compliant vs Non-Compliant/Uncertain classification at finding level
-    # Positive class: COMPLIANT
+    # 4-class multi-class metrics across all 4 finding statuses
+    finding_confusion_4: Dict[str, Dict[str, int]] = {
+        gt: {pred: 0 for pred in FOUR_CLASSES} for gt in FOUR_CLASSES
+    }
+    for f in finding_results:
+        exp_st = f.expected_status if f.expected_status in FOUR_CLASSES else ComplianceStatus.UNABLE_TO_DETERMINE.value
+        pred_st = f.predicted_status if f.predicted_status in FOUR_CLASSES else ComplianceStatus.UNABLE_TO_DETERMINE.value
+        if exp_st in finding_confusion_4 and pred_st in finding_confusion_4[exp_st]:
+            finding_confusion_4[exp_st][pred_st] += 1
+
+    per_class_finding_metrics: Dict[str, Dict[str, float]] = {}
+    finding_f1_list: List[float] = []
+
+    for cls in FOUR_CLASSES:
+        c_tp = finding_confusion_4[cls][cls]
+        c_fp = sum(finding_confusion_4[other][cls] for other in FOUR_CLASSES if other != cls)
+        c_fn = sum(finding_confusion_4[cls][other] for other in FOUR_CLASSES if other != cls)
+        c_support = c_tp + c_fn
+
+        c_prec = (c_tp / (c_tp + c_fp)) if (c_tp + c_fp) > 0 else 0.0
+        c_rec = (c_tp / (c_tp + c_fn)) if (c_tp + c_fn) > 0 else 0.0
+        c_f1 = (2 * c_prec * c_rec / (c_prec + c_rec)) if (c_prec + c_rec) > 0 else 0.0
+
+        per_class_finding_metrics[cls] = {
+            "precision": round(c_prec, 4),
+            "recall": round(c_rec, 4),
+            "f1": round(c_f1, 4),
+            "support": float(c_support),
+        }
+        if c_support > 0:
+            finding_f1_list.append(c_f1)
+
+    four_class_macro_f1 = round(sum(finding_f1_list) / len(finding_f1_list), 4) if finding_f1_list else 0.0
+
+    # Binary Compliant vs Non-Compliant/Uncertain classification at finding level
+    # Positive class: COMPLIANT (legacy fields preserved for backward compatibility)
     tp = sum(1 for f in finding_results if f.expected_status == ComplianceStatus.COMPLIANT.value and f.predicted_status == ComplianceStatus.COMPLIANT.value)
     fp = sum(1 for f in finding_results if f.expected_status != ComplianceStatus.COMPLIANT.value and f.predicted_status == ComplianceStatus.COMPLIANT.value)
     fn = sum(1 for f in finding_results if f.expected_status == ComplianceStatus.COMPLIANT.value and f.predicted_status != ComplianceStatus.COMPLIANT.value)
 
-    precision = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0
-    recall = (tp / (tp + fn)) if (tp + fn) > 0 else 0.0
-    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    bin_prec = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+    bin_rec = (tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+    bin_f1 = (2 * bin_prec * bin_rec / (bin_prec + bin_rec)) if (bin_prec + bin_rec) > 0 else 0.0
 
     return FindingMetricStats(
         total_findings=total,
         exact_status_matches=status_matches,
         reason_code_matches=reason_matches,
         human_review_matches=hr_matches,
-        precision=round(precision, 4),
-        recall=round(recall, 4),
-        f1_score=round(f1, 4),
+        precision=round(bin_prec, 4),
+        recall=round(bin_rec, 4),
+        f1_score=round(bin_f1, 4),
         exact_status_accuracy=round(status_matches / total, 4),
         reason_code_accuracy=round(reason_matches / total, 4),
         human_review_accuracy=round(hr_matches / total, 4),
+        four_class_status_accuracy=round(status_matches / total, 4),
+        four_class_macro_f1=four_class_macro_f1,
+        per_class_metrics=per_class_finding_metrics,
+        binary_compliant_precision=round(bin_prec, 4),
+        binary_compliant_recall=round(bin_rec, 4),
+        binary_compliant_f1=round(bin_f1, 4),
     )
 
 

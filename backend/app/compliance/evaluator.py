@@ -132,12 +132,19 @@ def compare_entity_names(
     core_ext, suffix_ext = _split_core_and_suffix(cleaned_ext)
     core_req, suffix_req = _split_core_and_suffix(cleaned_req)
 
-    if core_ext and core_ext == core_req:
-        if suffix_ext == suffix_req and suffix_ext is not None:
-            return True, "FORMAT_NORMALIZED_MATCH"
-        if suffix_ext != suffix_req:
-            # Different corporate suffixes (e.g. Inc vs LLC) or one missing suffix
-            if suffix_ext is not None and suffix_req is not None:
+    if core_ext and core_req:
+        if core_ext == core_req:
+            if suffix_ext == suffix_req and suffix_ext is not None:
+                return True, "FORMAT_NORMALIZED_MATCH"
+            if suffix_ext != suffix_req:
+                # Different corporate suffixes (e.g. Inc vs LLC) or one missing suffix
+                if suffix_ext is not None and suffix_req is not None:
+                    return False, "CORPORATE_SUFFIX_DISCREPANCY"
+                return False, "PARTIAL_OR_SUBSTRING_MISMATCH"
+
+        # Check core substring match or trade name variation (e.g. 'Apex Electrical Inc' vs 'Apex Electrical Contractors LLC')
+        if (core_ext in core_req or core_req in core_ext) or ("dba" in cleaned_ext.lower() or "dba" in cleaned_req.lower()):
+            if suffix_ext != suffix_req and suffix_ext is not None and suffix_req is not None:
                 return False, "CORPORATE_SUFFIX_DISCREPANCY"
             return False, "PARTIAL_OR_SUBSTRING_MISMATCH"
 

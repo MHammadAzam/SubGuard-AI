@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}SubGuard AI — Certificate Compliance{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-container">
+            <div class="brand">
+                <a href="/" class="brand-link">
+                    <span class="brand-shield">🛡️</span>
+                    <span class="brand-name">SubGuard AI</span>
+                </a>
+                <span class="brand-subtitle">Insurance Compliance Engine</span>
+            </div>
+            <nav class="app-nav">
+                <a href="/dashboard" class="nav-link {% if active_nav == 'dashboard' %}active{% endif %}">Dashboard</a>
+                <a href="/submissions/new" class="nav-link {% if active_nav == 'new' %}active{% endif %}">+ New Review</a>
+                <a href="/submissions" class="nav-link {% if active_nav == 'history' %}active{% endif %}">History</a>
+            </nav>
+            <div class="provider-badge">
+                <span class="badge-dot"></span>
+                <span class="badge-label">Provider: <strong>Mock Mode (Offline)</strong></span>
+            </div>
+        </div>
+    </header>
+
+    <main class="app-main">
+        <div class="main-container">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+    <footer class="app-footer">
+        <div class="footer-container">
+            <p>SubGuard AI &bull; AI extracts. Deterministic code evaluates. Humans resolve uncertainty.</p>
+            <p class="footer-notice">Local evaluation environment &bull; Zero external network requests &bull; Strict deterministic verification</p>
+        </div>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

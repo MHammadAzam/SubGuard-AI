@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — SubGuard AI{% endblock %}
+
+{% block content %}
+<div class="sub-header-bar">
+    <div>
+        <h1 style="font-size: 24px; font-weight: 700; color: #0f172a;">Compliance Dashboard</h1>
+        <p style="color: #64748b; font-size: 13px; margin-top: 2px;">
+            Overview of subcontractor insurance certificate reviews and compliance health.
+        </p>
+    </div>
+    <div>
+        <a href="/submissions/new" class="btn btn-primary">+ Review New Document</a>
+    </div>
+</div>
+
+<!-- Real Persisted Statistics Cards -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <span class="stat-label">Total Submissions</span>
+        <span class="stat-value">{{ stats.total_submissions }}</span>
+    </div>
+    <div class="stat-card compliant">
+        <span class="stat-label">Compliant</span>
+        <span class="stat-value">{{ stats.compliant }}</span>
+    </div>
+    <div class="stat-card non-compliant">
+        <span class="stat-label">Non-Compliant</span>
+        <span class="stat-value">{{ stats.non_compliant }}</span>
+    </div>
+    <div class="stat-card review">
+        <span class="stat-label">Requires Review</span>
+        <span class="stat-value">{{ stats.requires_human_review }}</span>
+    </div>
+    <div class="stat-card missing">
+        <span class="stat-label">Missing Evidence</span>
+        <span class="stat-value">{{ stats.missing_evidence }}</span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Unable to Determine</span>
+        <span class="stat-value">{{ stats.unable_to_determine }}</span>
+    </div>
+</div>
+
+<!-- Quick Demo Banner if 0 submissions -->
+{% if stats.total_submissions == 0 %}
+<div class="card" style="border: 2px dashed #93c5fd; background: #eff6ff;">
+    <div class="card-body" style="text-align: center; padding: 32px 20px;">
+        <h3 style="font-size: 18px; font-weight: 600; color: #1e3a8a; margin-bottom: 8px;">
+            No Submissions Yet — Run an Offline Demonstration
+        </h3>
+        <p style="color: #475569; max-width: 600px; margin: 0 auto 18px; font-size: 13px;">
+            SubGuard AI is ready with bundled synthetic fixtures (SCEN-01 through SCEN-40).
+            Upload a synthetic ACORD 25 certificate or test the compliance evaluator with one click.
+        </p>
+        <a href="/submissions/new" class="btn btn-primary">Start Demonstration Review</a>
+    </div>
+</div>
+{% endif %}
+
+<!-- Recent Submissions Table -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Recent Submissions</h2>
+        <a href="/submissions" class="btn btn-secondary btn-sm">View All History &rarr;</a>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        {% if recent_submissions %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Submission Ref</th>
+                    <th>Subcontractor</th>
+                    <th>Submitted At (UTC)</th>
+                    <th>Documents</th>
+                    <th>Provider</th>
+                    <th>Compliance Status</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for sub in recent_submissions %}
+                <tr>
+                    <td>
+                        <a href="/submissions/{{ sub.id }}" style="color: #1e3a8a; font-weight: 600; text-decoration: none;">
+                            {{ sub.name }}
+                        </a>
+                        <div style="font-size: 11px; color: #64748b; font-family: monospace;">{{ sub.id }}</div>
+                    </td>
+                    <td>
+                        <strong>{{ sub.subcontractor_name or "Unknown Subcontractor" }}</strong>
+                    </td>
+                    <td style="color: #64748b;">
+                        {{ sub.created_at[:19].replace('T', ' ') }}
+                    </td>
+                    <td>
+                        <span style="font-weight: 600;">{{ sub.document_count }}</span> file(s)
+                    </td>
+                    <td>
+                        <span style="font-size: 11px; padding: 2px 6px; background: #f1f5f9; border-radius: 3px; font-family: monospace;">
+                            {{ sub.provider }}
+                        </span>
+                    </td>
+                    <td>
+                        <span class="status-badge {{ sub.overall_status }}">
+                            {{ sub.overall_status.replace('_', ' ') }}
+                        </span>
+                    </td>
+                    <td>
+                        <a href="/submissions/{{ sub.id }}" class="btn btn-secondary btn-sm">Inspect</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div style="padding: 30px; text-align: center; color: #64748b;">
+            No past submissions recorded in local SQLite database.
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

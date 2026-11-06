@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+
+{% block title %}Evidence Trace — {{ submission.name }} — SubGuard AI{% endblock %}
+
+{% block content %}
+<div class="breadcrumb-nav">
+    <a href="/dashboard">Dashboard</a> &rsaquo;
+    <a href="/submissions">History</a> &rsaquo;
+    <a href="/submissions/{{ submission.id }}">{{ submission.name }}</a> &rsaquo;
+    <span>Evidence Trace</span>
+</div>
+
+<div class="sub-header-bar">
+    <div>
+        <h1 style="font-size: 24px; font-weight: 700; color: #0f172a;">Traceable Evidence Verification</h1>
+        <p style="color: #64748b; font-size: 13px; margin-top: 2px;">
+            Audit trail of every extracted data point mapped to source documents, page numbers, and exact text citations.
+        </p>
+    </div>
+    <div>
+        <a href="/submissions/{{ submission.id }}" class="btn btn-secondary">&larr; Back to Results</a>
+    </div>
+</div>
+
+{% set doc_set = submission.result.get('document_set') %}
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Extracted Fields & Grounded Citations</h2>
+        <span style="font-size: 12px; color: #64748b;">
+            Zero hallucinated evidence &bull; Substring text verified
+        </span>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        {% if doc_set %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Category</th>
+                    <th>Extracted Field</th>
+                    <th>Normalized Value</th>
+                    <th>Doc & Page</th>
+                    <th>Supporting Source Text Citation</th>
+                    <th>Verification</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Named Insured -->
+                {% if doc_set.named_insured %}
+                <tr>
+                    <td><strong>Entity</strong></td>
+                    <td>Named Insured</td>
+                    <td><code>{{ doc_set.named_insured.name }}</code></td>
+                    <td>
+                        Page {{ doc_set.named_insured.evidence.page_number if doc_set.named_insured.evidence else 1 }}
+                    </td>
+                    <td>
+                        {% if doc_set.named_insured.evidence %}
+                        <div class="evidence-quote">&ldquo;{{ doc_set.named_insured.evidence.source_text }}&rdquo;</div>
+                        {% else %}
+                        <span style="color: #64748b; font-style: italic;">No quote citation attached</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span style="color: #15803d; font-weight: 600;">✓ Grounded</span>
+                    </td>
+                </tr>
+                {% endif %}
+
+                <!-- Certificate Holder -->
+                {% if doc_set.certificate_holder %}
+                <tr>
+                    <td><strong>Entity</strong></td>
+                    <td>Certificate Holder</td>
+                    <td><code>{{ doc_set.certificate_holder.name }}</code></td>
+                    <td>
+                        Page {{ doc_set.certificate_holder.evidence.page_number if doc_set.certificate_holder.evidence else 1 }}
+                    </td>
+                    <td>
+                        {% if doc_set.certificate_holder.evidence %}
+                        <div class="evidence-quote">&ldquo;{{ doc_set.certificate_holder.evidence.source_text }}&rdquo;</div>
+                        {% else %}
+                        <span style="color: #64748b; font-style: italic;">No quote citation attached</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span style="color: #15803d; font-weight: 600;">✓ Grounded</span>
+                    </td>
+                </tr>
+                {% endif %}
+
+                <!-- Coverages -->
+                {% for cov in doc_set.coverages %}
+                <tr>
+                    <td><strong>Coverage</strong></td>
+                    <td>{{ cov.coverage_type.replace('_', ' ').title() }}</td>
+                    <td>
+                        <div>Policy: <strong>{{ cov.policy_number or 'N/A' }}</strong></div>
+                        {% if cov.each_occurrence %}
+                        <div>Occ: <strong>${{ (cov.each_occurrence.amount_cents / 100)|round|int }}</strong></div>
+                        {% endif %}
+                        {% if cov.general_aggregate %}
+                        <div>Agg: <strong>${{ (cov.general_aggregate.amount_cents / 100)|round|int }}</strong></div>
+                        {% endif %}
+                        {% if cov.effective_date %}
+                        <div>Term: {{ cov.effective_date.date }} &rarr; {{ cov.expiration_date.date if cov.expiration_date else 'N/A' }}</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        Page {{ cov.evidence.page_number if cov.evidence else 1 }}
+                    </td>
+                    <td>
+                        {% if cov.evidence %}
+                        <div class="evidence-quote">&ldquo;{{ cov.evidence.source_text }}&rdquo;</div>
+                        {% else %}
+                        <span style="color: #64748b; font-style: italic;">No quote citation attached</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span style="color: #15803d; font-weight: 600;">
+                            ✓ {{ cov.extraction_status.replace('_', ' ') }}
+                        </span>
+                    </td>
+                </tr>
+                {% endfor %}
+
+                <!-- Endorsements -->
+                {% for end in doc_set.endorsements %}
+                <tr>
+                    <td><strong>Endorsement</strong></td>
+                    <td>{{ end.endorsement_type.replace('_', ' ').title() }}</td>
+                    <td>
+                        <div>Form: <strong>{{ end.form_number or 'Unspecified' }}</strong></div>
+                        <div>Blanket: <strong>{{ 'Yes' if end.is_blanket else 'No' }}</strong></div>
+                        {% if end.named_entities %}
+                        <div>Scheduled: {{ end.named_entities|join(', ') }}</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        Page {{ end.evidence.page_number if end.evidence else 1 }}
+                    </td>
+                    <td>
+                        {% if end.evidence %}
+                        <div class="evidence-quote">&ldquo;{{ end.evidence.source_text }}&rdquo;</div>
+                        {% else %}
+                        <span style="color: #64748b; font-style: italic;">No quote citation attached</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span style="color: #15803d; font-weight: 600;">
+                            ✓ {{ end.extraction_status.replace('_', ' ') }}
+                        </span>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div style="padding: 30px; text-align: center; color: #64748b;">
+            No structured document set available for evidence tracing.
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

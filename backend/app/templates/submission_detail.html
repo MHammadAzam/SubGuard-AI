@@ -1,0 +1,289 @@
+{% extends "base.html" %}
+
+{% block title %}Submission {{ submission.id }} — SubGuard AI{% endblock %}
+
+{% block content %}
+<div class="breadcrumb-nav">
+    <a href="/dashboard">Dashboard</a> &rsaquo;
+    <a href="/submissions">History</a> &rsaquo;
+    <span>{{ submission.name }}</span>
+</div>
+
+<!-- Header / Status Banner -->
+<div class="sub-header-bar">
+    <div>
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <h1 style="font-size: 24px; font-weight: 700; color: #0f172a;">{{ submission.name }}</h1>
+            <span class="status-badge {{ submission.overall_status }}" style="font-size: 13px; padding: 6px 14px;">
+                {{ submission.overall_status.replace('_', ' ') }}
+            </span>
+        </div>
+        <p style="color: #64748b; font-size: 13px; margin-top: 4px;">
+            ID: <code style="font-family: monospace; font-size: 12px;">{{ submission.id }}</code> &bull;
+            Evaluation Date: <strong>{{ submission.evaluation_date }}</strong> &bull;
+            Submitted: {{ submission.created_at[:19].replace('T', ' ') }} UTC &bull;
+            Provider: <strong>{{ submission.provider }}</strong>
+        </p>
+    </div>
+    <div style="display: flex; gap: 8px;">
+        <a href="/submissions/{{ submission.id }}/evidence" class="btn btn-secondary">
+            🔍 Evidence Trace
+        </a>
+        <a href="/submissions/{{ submission.id }}/review" class="btn btn-primary">
+            ✍️ Human Review Decision
+        </a>
+    </div>
+</div>
+
+<!-- Documents Associated With This Submission -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Uploaded Insurance Documents</h2>
+        <span style="font-size: 12px; color: #64748b;">{{ submission.documents|length }} Document(s) Submitted</span>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Original Filename</th>
+                    <th>Pages</th>
+                    <th>File Size</th>
+                    <th>Processing Status</th>
+                    <th>Document Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for doc in submission.documents %}
+                <tr>
+                    <td>
+                        <strong style="text-transform: uppercase; font-size: 11px; padding: 2px 6px; background: #e2e8f0; border-radius: 3px;">
+                            {{ doc.document_type }}
+                        </strong>
+                    </td>
+                    <td>
+                        <span style="font-weight: 600;">{{ doc.original_filename }}</span>
+                        <div style="font-size: 11px; color: #64748b; font-family: monospace;">{{ doc.id }}</div>
+                    </td>
+                    <td>{{ doc.page_count }} page(s)</td>
+                    <td>{{ (doc.file_size_bytes / 1024)|round(1) }} KB</td>
+                    <td>
+                        {% if doc.processing_status == 'processed' %}
+                            <span style="color: #15803d; font-weight: 600;">✓ Processed</span>
+                        {% else %}
+                            <span style="color: #b91c1c; font-weight: 600;">✗ {{ doc.error_message or 'Failed' }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <a href="/api/v1/documents/{{ doc.id }}/download" class="btn btn-secondary btn-sm" target="_blank">
+                            View / Download PDF
+                        </a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Policy Entities & Grounded Metadata -->
+{% set doc_set = submission.result.get('document_set') %}
+{% if doc_set %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Extracted Policy Information</h2>
+    </div>
+    <div class="card-body">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 16px;">
+                <span class="stat-label">Named Insured (Subcontractor)</span>
+                <div style="font-size: 16px; font-weight: 700; color: #0f172a; margin-top: 4px;">
+                    {{ doc_set.named_insured.name if doc_set.named_insured else 'Not Extracted / Unknown' }}
+                </div>
+                {% if doc_set.named_insured and doc_set.named_insured.address %}
+                <div style="font-size: 12px; color: #64748b; margin-top: 2px;">
+                    {{ doc_set.named_insured.address }}
+                </div>
+                {% endif %}
+            </div>
+
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 16px;">
+                <span class="stat-label">Certificate Holder</span>
+                <div style="font-size: 16px; font-weight: 700; color: #0f172a; margin-top: 4px;">
+                    {{ doc_set.certificate_holder.name if doc_set.certificate_holder else 'Not Extracted / Unknown' }}
+                </div>
+                {% if doc_set.certificate_holder and doc_set.certificate_holder.address %}
+                <div style="font-size: 12px; color: #64748b; margin-top: 2px;">
+                    {{ doc_set.certificate_holder.address }}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Extracted Coverage Types and Limits -->
+{% if doc_set.coverages %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Extracted Coverage Types & Policy Limits</h2>
+        <span style="font-size: 12px; color: #64748b;">{{ doc_set.coverages|length }} Coverage Section(s)</span>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Coverage Type</th>
+                    <th>Policy Number</th>
+                    <th>Policy Term</th>
+                    <th>Each Occurrence / Limit</th>
+                    <th>General Aggregate</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cov in doc_set.coverages %}
+                <tr>
+                    <td><strong>{{ cov.coverage_type.replace('_', ' ').title() }}</strong></td>
+                    <td><code>{{ cov.policy_number or 'Unspecified' }}</code></td>
+                    <td>
+                        {{ cov.effective_date.date if cov.effective_date else 'N/A' }} &rarr;
+                        {{ cov.expiration_date.date if cov.expiration_date else 'N/A' }}
+                    </td>
+                    <td>
+                        {% if cov.each_occurrence %}
+                            ${{ (cov.each_occurrence.amount_cents / 100)|round|int }}
+                        {% elif cov.combined_single_limit %}
+                            ${{ (cov.combined_single_limit.amount_cents / 100)|round|int }} (CSL)
+                        {% elif cov.per_accident %}
+                            ${{ (cov.per_accident.amount_cents / 100)|round|int }} (Per Accident)
+                        {% else %}
+                            <span style="color: #64748b;">N/A</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if cov.general_aggregate %}
+                            ${{ (cov.general_aggregate.amount_cents / 100)|round|int }}
+                        {% else %}
+                            <span style="color: #64748b;">N/A</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span style="font-size: 11px; padding: 2px 6px; background: #dcfce7; color: #15803d; border-radius: 3px; font-weight: 600;">
+                            ✓ Extracted
+                        </span>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endif %}
+
+<!-- Findings Breakdown Table -->
+{% set review = submission.result.get('review') %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Deterministic Compliance Findings</h2>
+        <span style="font-size: 12px; color: #64748b;">
+            Evaluated deterministically by Python rules engine
+        </span>
+    </div>
+    <div class="card-body">
+        {% if review and review.findings %}
+            {% for f in review.findings %}
+            <div class="finding-card {{ f.status }}">
+                <div class="finding-header">
+                    <div>
+                        <span class="status-badge {{ f.status }}">{{ f.status.replace('_', ' ') }}</span>
+                        <strong class="finding-title" style="margin-left: 8px;">{{ f.requirement_id }}</strong>
+                    </div>
+                    <div>
+                        <span class="finding-reason">Code: {{ f.reason_code }}</span>
+                        {% if f.requires_human_review %}
+                            <span style="font-size: 11px; padding: 2px 6px; background: #fef3c7; color: #b45309; border-radius: 3px; font-weight: 600; margin-left: 6px;">
+                                Human Review Required
+                            </span>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="finding-desc">{{ f.explanation }}</div>
+
+                <!-- Values summary -->
+                <div style="font-size: 12px; color: #475569; margin-bottom: 8px;">
+                    {% if f.required_value %}
+                        <span><strong>Required:</strong> {{ f.required_value }}</span>
+                    {% endif %}
+                    {% if f.found_value %}
+                        <span style="margin-left: 14px;"><strong>Found:</strong> {{ f.found_value }}</span>
+                    {% endif %}
+                </div>
+
+                <!-- Grounded evidence quote -->
+                {% if f.evidence %}
+                <div class="evidence-box">
+                    <strong>Supporting Evidence:</strong>
+                    {% for ev in f.evidence %}
+                    <div class="evidence-quote">
+                        &ldquo;{{ ev.source_text }}&rdquo;
+                        <span style="font-size: 11px; color: #64748b; font-style: normal; margin-left: 6px;">
+                            (Page {{ ev.page_number }}, Doc: {{ ev.document_type }})
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        {% else %}
+            <div style="color: #64748b;">No findings recorded for this submission.</div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Past Human Review Decisions -->
+{% if submission.reviews %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Recorded Human Review Actions</h2>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Decision</th>
+                    <th>Target Rule</th>
+                    <th>Reviewer</th>
+                    <th>Timestamp (UTC)</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rev in submission.reviews %}
+                <tr>
+                    <td>
+                        <strong style="text-transform: uppercase; font-size: 12px;">{{ rev.review_status }}</strong>
+                    </td>
+                    <td>
+                        {% if rev.finding_id %}
+                            <code style="font-size: 11px;">{{ rev.finding_id }}</code>
+                            {% if rev.reason_code %}<div style="font-size: 11px; color: #64748b;">{{ rev.reason_code }}</div>{% endif %}
+                        {% else %}
+                            <span style="color: #94a3b8; font-size: 12px;">All / General</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ rev.reviewer_name }}</td>
+                    <td style="color: #64748b;">{{ rev.created_at[:19].replace('T', ' ') }}</td>
+                    <td>{{ rev.reviewer_notes }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}

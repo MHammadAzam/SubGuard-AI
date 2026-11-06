@@ -14,7 +14,7 @@ from app.extraction.providers.base import (
     ExtractionSchemaValidationError,
     ExtractionTimeoutError,
 )
-from app.extraction.providers.mock import MockExtractionProvider
+from app.extraction.providers.mock import HonestApplicationMockProvider, MockExtractionProvider
 from app.extraction.providers.gemini import GeminiExtractionProvider
 from app.extraction.providers.openrouter import OpenRouterExtractionProvider
 
@@ -31,6 +31,8 @@ def get_extraction_provider(
 
     if name == "mock":
         return MockExtractionProvider()
+    elif name in ("honest_mock", "application_mock"):
+        return HonestApplicationMockProvider()
     elif name == "gemini":
         return GeminiExtractionProvider(api_key=api_key, model_name=model_name or "gemini-2.0-flash")
     elif name == "openrouter":

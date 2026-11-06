@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block title %}Submission History — SubGuard AI{% endblock %}
+
+{% block content %}
+<div class="breadcrumb-nav">
+    <a href="/dashboard">Dashboard</a> &rsaquo; <span>Submission History</span>
+</div>
+
+<div class="sub-header-bar">
+    <div>
+        <h1 style="font-size: 24px; font-weight: 700; color: #0f172a;">Submission History</h1>
+        <p style="color: #64748b; font-size: 13px; margin-top: 2px;">
+            Auditable archive of all evaluated subcontractor insurance certificate submissions.
+        </p>
+    </div>
+    <div>
+        <a href="/submissions/new" class="btn btn-primary">+ Review New Document</a>
+    </div>
+</div>
+
+<!-- Search & Filter Controls -->
+<div class="card" style="margin-bottom: 16px;">
+    <div class="card-body" style="padding: 14px 20px;">
+        <form method="GET" action="/submissions" style="display: flex; gap: 12px; align-items: center;">
+            <input type="text" name="q" class="form-input" placeholder="Search by submission name or subcontractor..."
+                   value="{{ search_query or '' }}" style="flex: 2;">
+            <select name="status" class="form-select" style="flex: 1;">
+                <option value="">All Statuses</option>
+                <option value="compliant" {% if status_filter == 'compliant' %}selected{% endif %}>Compliant</option>
+                <option value="non_compliant" {% if status_filter == 'non_compliant' %}selected{% endif %}>Non-Compliant</option>
+                <option value="requires_human_review" {% if status_filter == 'requires_human_review' %}selected{% endif %}>Requires Review</option>
+                <option value="missing_evidence" {% if status_filter == 'missing_evidence' %}selected{% endif %}>Missing Evidence</option>
+                <option value="unable_to_determine" {% if status_filter == 'unable_to_determine' %}selected{% endif %}>Unable to Determine</option>
+            </select>
+            <button type="submit" class="btn btn-secondary">Filter</button>
+            {% if search_query or status_filter %}
+                <a href="/submissions" class="btn btn-secondary" style="color: #64748b;">Clear</a>
+            {% endif %}
+        </form>
+    </div>
+</div>
+
+<!-- History Table -->
+<div class="card">
+    <div class="card-body" style="padding: 0;">
+        {% if submissions %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Submission Reference</th>
+                    <th>Subcontractor</th>
+                    <th>Evaluation Date</th>
+                    <th>Submitted At (UTC)</th>
+                    <th>Documents</th>
+                    <th>Provider</th>
+                    <th>Compliance Status</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for sub in submissions %}
+                <tr>
+                    <td>
+                        <a href="/submissions/{{ sub.id }}" style="color: #1e3a8a; font-weight: 600; text-decoration: none;">
+                            {{ sub.name }}
+                        </a>
+                        <div style="font-size: 11px; color: #64748b; font-family: monospace;">{{ sub.id }}</div>
+                    </td>
+                    <td>
+                        <strong>{{ sub.subcontractor_name or "Unknown Subcontractor" }}</strong>
+                    </td>
+                    <td>{{ sub.evaluation_date }}</td>
+                    <td style="color: #64748b;">
+                        {{ sub.created_at[:19].replace('T', ' ') }}
+                    </td>
+                    <td>
+                        <span style="font-weight: 600;">{{ sub.document_count }}</span> file(s)
+                    </td>
+                    <td>
+                        <span style="font-size: 11px; padding: 2px 6px; background: #f1f5f9; border-radius: 3px; font-family: monospace;">
+                            {{ sub.provider }}
+                        </span>
+                    </td>
+                    <td>
+                        <span class="status-badge {{ sub.overall_status }}">
+                            {{ sub.overall_status.replace('_', ' ') }}
+                        </span>
+                    </td>
+                    <td>
+                        <a href="/submissions/{{ sub.id }}" class="btn btn-secondary btn-sm">Reopen Result</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div style="padding: 40px; text-align: center; color: #64748b;">
+            No submissions matched your search criteria.
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

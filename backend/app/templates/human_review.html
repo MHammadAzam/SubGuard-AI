@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block title %}Human Review — {{ submission.name }} — SubGuard AI{% endblock %}
+
+{% block content %}
+<div class="breadcrumb-nav">
+    <a href="/dashboard">Dashboard</a> &rsaquo;
+    <a href="/submissions">History</a> &rsaquo;
+    <a href="/submissions/{{ submission.id }}">{{ submission.name }}</a> &rsaquo;
+    <span>Human Review Resolution</span>
+</div>
+
+<div class="sub-header-bar">
+    <div>
+        <h1 style="font-size: 24px; font-weight: 700; color: #0f172a;">Human Review Decision</h1>
+        <p style="color: #64748b; font-size: 13px; margin-top: 2px;">
+            AI extracts data. Deterministic rules evaluate limits. Qualified humans resolve uncertainty and record audit trails.
+        </p>
+    </div>
+    <div>
+        <a href="/submissions/{{ submission.id }}" class="btn btn-secondary">&larr; Back to Results</a>
+    </div>
+</div>
+
+{% set review = submission.result.get('review') %}
+
+<div style="display: grid; grid-template-columns: 3fr 2fr; gap: 20px;">
+    <!-- Left column: Findings requiring review -->
+    <div>
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Review Items & Reason Codes</h2>
+            </div>
+            <div class="card-body">
+                {% if review and review.findings %}
+                    {% for f in review.findings %}
+                        {% if f.requires_human_review or f.status != 'compliant' %}
+                        <div class="finding-card {{ f.status }}">
+                            <div class="finding-header">
+                                <span class="status-badge {{ f.status }}">{{ f.status.replace('_', ' ') }}</span>
+                                <span class="finding-reason">{{ f.reason_code }}</span>
+                            </div>
+                            <div style="font-weight: 600; font-size: 13px; margin-top: 4px;">{{ f.requirement_id }}</div>
+                            <div class="finding-desc" style="margin-top: 4px;">{{ f.explanation }}</div>
+                            {% if f.evidence %}
+                                <div class="evidence-box">
+                                    {% for ev in f.evidence %}
+                                    <div class="evidence-quote">&ldquo;{{ ev.source_text }}&rdquo;</div>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                    {% endfor %}
+                {% else %}
+                    <div style="color: #64748b;">All automated rules evaluated to compliant. No specific flags require review.</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Right column: Human Review Action Form -->
+    <div>
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Record Compliance Decision</h2>
+            </div>
+            <div class="card-body">
+                <form id="reviewActionForm" action="/api/v1/submissions/{{ submission.id }}/review" method="POST">
+                    <div class="form-group">
+                        <label class="form-label" for="review_status">Decision Action *</label>
+                        <select id="review_status" name="review_status" class="form-select" required>
+                            <option value="accepted_exception">Accept Exception (Approved by GC)</option>
+                            <option value="deficiency_notice_required">Issue Deficiency Notice to Subcontractor</option>
+                            <option value="waived">Waive Requirement</option>
+                            <option value="rejected">Reject Submission</option>
+                        </select>
+                        <div class="form-hint">Select the auditable resolution action for this review.</div>
+                    </div>
+
+                    <div class="form-group" id="ruleSelectionGroup">
+                        <label class="form-label" for="rule_id">Target Requirement (Required for Waivers)</label>
+                        <select id="rule_id" name="rule_id" class="form-select">
+                            <option value="">-- Apply to entire submission / flags --</option>
+                            {% if review and review.findings %}
+                                {% for f in review.findings %}
+                                <option value="{{ f.requirement_id }}">{{ f.requirement_id }} ({{ f.status.upper() }} - {{ f.reason_code }})</option>
+                                {% endfor %}
+                            {% endif %}
+                        </select>
+                        <div class="form-hint">Select the specific requirement when granting an authorized waiver.</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="reviewer_name">Reviewer Legal Name *</label>
+                        <input type="text" id="reviewer_name" name="reviewer_name" class="form-input"
+                               value="Compliance Coordinator" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="reviewer_notes">Audit Notes & Justification *</label>
+                        <textarea id="reviewer_notes" name="reviewer_notes" class="form-textarea" rows="4"
+                                  placeholder="Provide justification for accepting, rejecting, or requesting corrections..." required></textarea>
+                        <div class="form-hint">Mandatory note recorded into the permanent audit log.</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="update_submission_status">Update Overall Submission Status</label>
+                        <select id="update_submission_status" name="update_submission_status" class="form-select">
+                            <option value="">Keep current status ({{ submission.overall_status }})</option>
+                            <option value="compliant">Set status to COMPLIANT (Exception Accepted)</option>
+                            <option value="deficiency_pending">Set status to DEFICIENCY_PENDING</option>
+                            <option value="waived">Set status to WAIVED (Requirement Waived)</option>
+                            <option value="rejected">Set status to REJECTED</option>
+                            <option value="non_compliant">Set status to NON_COMPLIANT</option>
+                            <option value="requires_human_review">Set status to REQUIRES_HUMAN_REVIEW</option>
+                        </select>
+                    </div>
+
+                    <div id="reviewErrorBox" style="display: none; margin-bottom: 12px; padding: 10px; background: #fee2e2; border: 1px solid #f87171; border-radius: 4px; color: #b91c1c; font-size: 13px;"></div>
+
+                    <button type="submit" id="recordReviewBtn" class="btn btn-primary" style="width: 100%; padding: 10px;">
+                        Save Decision to Audit Trail
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.getElementById('reviewActionForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const btn = document.getElementById('recordReviewBtn');
+        const errBox = document.getElementById('reviewErrorBox');
+        errBox.style.display = 'none';
+        btn.disabled = true;
+        btn.innerText = 'Saving...';
+
+        const formData = new FormData(this);
+        const payload = {
+            review_status: formData.get('review_status'),
+            reviewer_name: formData.get('reviewer_name'),
+            reviewer_notes: formData.get('reviewer_notes'),
+            rule_id: formData.get('rule_id') || null,
+            update_submission_status: formData.get('update_submission_status') || null
+        };
+
+        try {
+            const res = await fetch('/api/v1/submissions/{{ submission.id }}/review', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || 'Failed to record review');
+            }
+
+            window.location.href = '/submissions/{{ submission.id }}';
+        } catch (err) {
+            errBox.style.display = 'block';
+            errBox.innerText = '⚠️ ' + err.message;
+            btn.disabled = false;
+            btn.innerText = 'Save Decision to Audit Trail';
+        }
+    });
+</script>
+{% endblock %}

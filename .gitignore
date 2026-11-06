@@ -1,0 +1,40 @@
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+*.egg-info/
+subguard_backend.egg-info/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Benchmark outputs
+**/evaluation/reports/benchmark_openrouter_*.json
+**/evaluation/reports/benchmark_openrouter_*.md
+**/evaluation/reports/benchmark_gemini_*.json
+**/evaluation/reports/benchmark_gemini_*.md
+**/evaluation/reports/generated/scenario_bench_*.json
+**/evaluation/reports/generated/scenario_bench_*.md
+
+# Local database and uploaded documents
+**/data/
+**/uploads/
+*.db
+*.sqlite
+*.sqlite3

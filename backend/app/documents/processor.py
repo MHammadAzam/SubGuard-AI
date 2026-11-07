@@ -20,6 +20,7 @@ import pymupdf  # PyMuPDF
 from app.schemas.insurance import BoundingBox, DocumentType
 from app.schemas.pdf import (
     DocumentProcessingStatus,
+    PageType,
     PDFDocumentInspection,
     PDFPageInspection,
     PDFTextSpan,
@@ -128,6 +129,127 @@ def classify_document_text(full_text: str) -> Tuple[DocumentType, float, str]:
     )
 
 
+def classify_pdf_page(page: pymupdf.Page) -> Tuple[PageType, bool, bool, float, dict]:
+    """Classify an individual PDF page using multiple orthogonal signals.
+
+    Signals analyzed:
+    - Non-whitespace character count and text density (characters / unit area)
+    - Text block and span structure
+    - Printable character ratio (detects corrupt/garbled font encodings)
+    - Average token length (detects OCR noise vs coherent English text)
+    - Image coverage ratio and full-page raster scan detection
+    - Page dimensions, orientation, and aspect ratio
+
+    Returns:
+        (page_type, is_scanned, requires_ocr, confidence, signals_dict)
+    """
+    rect = page.rect
+    width = float(rect.width)
+    height = float(rect.height)
+    page_area = max(1.0, width * height)
+    rotation = int(page.rotation) % 360
+
+    page_text = page.get_text("text") or ""
+    non_ws_text = re.sub(r"\s+", "", page_text)
+    char_count = len(non_ws_text)
+    text_density = (char_count / page_area) * 1000.0
+
+    blocks = page.get_text("blocks") or []
+    text_blocks = [b for b in blocks if len(b) >= 5 and b[4].strip() and (len(b) < 7 or b[6] == 0)]
+    num_text_blocks = len(text_blocks)
+
+    printable_chars = len(re.findall(r"[A-Za-z0-9\.,;:\-\(\)\$%/&]", page_text))
+    printable_ratio = (printable_chars / max(1, char_count)) if char_count > 0 else 0.0
+
+    words = [w.strip() for w in page_text.split() if w.strip()]
+    word_count = len(words)
+    avg_word_len = (sum(len(w) for w in words) / max(1, word_count)) if word_count > 0 else 0.0
+
+    images = page.get_images(full=True)
+    num_images = len(images)
+
+    image_rects = []
+    for img_info in images:
+        xref = img_info[0]
+        try:
+            rects = page.get_image_rects(xref)
+            image_rects.extend(rects)
+        except Exception:
+            pass
+
+    total_image_area = sum(r.width * r.height for r in image_rects)
+    image_coverage = min(1.0, total_image_area / page_area)
+    has_full_page_image = (
+        image_coverage >= 0.65
+        or any(r.width >= width * 0.75 and r.height >= height * 0.75 for r in image_rects)
+    )
+
+    signals = {
+        "char_count": char_count,
+        "word_count": word_count,
+        "text_density": round(text_density, 3),
+        "num_text_blocks": num_text_blocks,
+        "printable_ratio": round(printable_ratio, 3),
+        "avg_word_len": round(avg_word_len, 2),
+        "num_images": num_images,
+        "image_coverage": round(image_coverage, 3),
+        "has_full_page_image": has_full_page_image,
+        "page_dimensions": [round(width, 1), round(height, 1)],
+        "rotation": rotation,
+    }
+
+    # Decision tree using multi-signal heuristics
+    # 1. Pure scanned: no text or negligible non-alphanumeric noise, image layer present or blank
+    if char_count == 0 or (char_count < 10 and printable_chars < 5):
+        return (
+            PageType.SCANNED,
+            True,
+            True,
+            0.99 if num_images > 0 else 0.90,
+            signals,
+        )
+
+    # 2. Scanned with full-page raster image and minimal/noisy text (e.g. low-res scan with margin stamp)
+    if has_full_page_image and char_count < 80:
+        return (
+            PageType.SCANNED,
+            True,
+            True,
+            0.95,
+            signals,
+        )
+
+    # 3. Uncertain / low quality: degraded font encoding or scrambled text
+    if (char_count >= 20 and printable_ratio < 0.50) or (word_count >= 5 and (avg_word_len < 1.8 or avg_word_len > 35.0)):
+        return (
+            PageType.UNCERTAIN_LOW_QUALITY,
+            True,
+            True,
+            0.70,
+            signals,
+        )
+
+    # 4. Sparse digital page: clean digital page with low word count (e.g. signature page, brief rider)
+    # Characterized by high printable ratio, normal word length, and NO dominant full-page raster scan
+    if char_count < 120 and not has_full_page_image and printable_ratio >= 0.80:
+        return (
+            PageType.SPARSE_DIGITAL,
+            False,
+            False,
+            0.92,
+            signals,
+        )
+
+    # 5. Native digital page: rich text layer, structured layout
+    return (
+        PageType.DIGITAL,
+        False,
+        False,
+        0.98 if char_count > 200 else 0.88,
+        signals,
+    )
+
+
 class PDFProcessor:
     """Engine for parsing, rendering, and inspecting PDF documents."""
 
@@ -224,9 +346,12 @@ class PDFProcessor:
                                     )
                                 )
 
-                    # Optionally render page image (PNG) with memory/dimension safeguards
+                    # Classify page independently using multi-signal heuristics
+                    p_type, p_is_scanned, p_requires_ocr, p_conf, p_signals = classify_pdf_page(page)
+
+                    # Render page image (PNG) if requested OR if page requires OCR/vision processing
                     png_bytes = None
-                    if render_images:
+                    if render_images or p_requires_ocr:
                         zoom = self.render_dpi / 72.0
                         matrix = pymupdf.Matrix(zoom, zoom)
                         pix = page.get_pixmap(matrix=matrix, alpha=False)
@@ -248,6 +373,11 @@ class PDFProcessor:
                             rotation=rotation,
                             text_content=page_text,
                             spans=spans,
+                            page_type=p_type,
+                            is_scanned=p_is_scanned,
+                            requires_ocr=p_requires_ocr,
+                            classification_confidence=p_conf,
+                            classification_signals=p_signals,
                             rendered_image_png=png_bytes,
                         )
                     )
@@ -264,13 +394,25 @@ class PDFProcessor:
                             rotation=0,
                             text_content="",
                             spans=[],
+                            page_type=PageType.UNCERTAIN_LOW_QUALITY,
+                            is_scanned=True,
+                            requires_ocr=True,
+                            classification_confidence=0.0,
+                            classification_signals={},
                             rendered_image_png=None,
                             error_message=err_msg,
                         )
                     )
 
             combined_text = "\n".join(combined_text_list)
-            is_scanned = not bool(combined_text.strip())
+
+            # Document-level multi-page analysis
+            has_scanned = any(p.is_scanned for p in inspected_pages)
+            has_digital = any(not p.is_scanned for p in inspected_pages)
+            is_mixed = has_scanned and has_digital
+            all_scanned = all(p.is_scanned for p in inspected_pages) if inspected_pages else False
+            scanned_pages = [p.page_number for p in inspected_pages if p.is_scanned]
+            digital_pages = [p.page_number for p in inspected_pages if not p.is_scanned]
 
             # Determine processing status
             if processing_errors:
@@ -278,7 +420,7 @@ class PDFProcessor:
                     status = DocumentProcessingStatus.FAILED
                 else:
                     status = DocumentProcessingStatus.PARTIAL_SUCCESS
-            elif is_scanned:
+            elif any(p.requires_ocr for p in inspected_pages):
                 status = DocumentProcessingStatus.REQUIRES_OCR
             else:
                 status = DocumentProcessingStatus.PROCESSED
@@ -292,7 +434,10 @@ class PDFProcessor:
                 content_hash_sha256=sha256_hash,
                 page_count=page_count,
                 processing_status=status,
-                is_scanned=is_scanned,
+                is_scanned=all_scanned or has_scanned,
+                is_mixed=is_mixed,
+                scanned_page_numbers=scanned_pages,
+                digital_page_numbers=digital_pages,
                 classified_type=doc_type,
                 classification_confidence=confidence,
                 classification_reason=reason,

@@ -53,10 +53,28 @@
                     <td><code>{{ doc_set.named_insured.name }}</code></td>
                     <td>
                         Page {{ doc_set.named_insured.evidence.page_number if doc_set.named_insured.evidence else 1 }}
+                        {% if doc_set.named_insured.evidence and doc_set.named_insured.evidence.processing_status == 'ocr_extracted' %}
+                        <span class="badge-ocr" style="display: block; margin-top: 4px; font-size: 11px; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; font-weight: 500;">
+                            OCR ({{ doc_set.named_insured.evidence.ocr_provider or 'tesseract' }})
+                        </span>
+                        {% endif %}
                     </td>
                     <td>
                         {% if doc_set.named_insured.evidence %}
-                        <div class="evidence-quote">&ldquo;{{ doc_set.named_insured.evidence.source_text }}&rdquo;</div>
+                        <div class="evidence-quote"
+                            {% if doc_set.named_insured.evidence.bounding_box %}
+                            data-bbox-x="{{ doc_set.named_insured.evidence.bounding_box.x }}"
+                            data-bbox-y="{{ doc_set.named_insured.evidence.bounding_box.y }}"
+                            data-bbox-w="{{ doc_set.named_insured.evidence.bounding_box.width }}"
+                            data-bbox-h="{{ doc_set.named_insured.evidence.bounding_box.height }}"
+                            {% endif %}>
+                            &ldquo;{{ doc_set.named_insured.evidence.source_text }}&rdquo;
+                        </div>
+                        {% if doc_set.named_insured.evidence.bounding_box %}
+                        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
+                            BBox: [{{ (doc_set.named_insured.evidence.bounding_box.x * 100)|round(1) }}%, {{ (doc_set.named_insured.evidence.bounding_box.y * 100)|round(1) }}%, {{ (doc_set.named_insured.evidence.bounding_box.width * 100)|round(1) }}%, {{ (doc_set.named_insured.evidence.bounding_box.height * 100)|round(1) }}%]
+                        </div>
+                        {% endif %}
                         {% else %}
                         <span style="color: #64748b; font-style: italic;">No quote citation attached</span>
                         {% endif %}
@@ -75,10 +93,28 @@
                     <td><code>{{ doc_set.certificate_holder.name }}</code></td>
                     <td>
                         Page {{ doc_set.certificate_holder.evidence.page_number if doc_set.certificate_holder.evidence else 1 }}
+                        {% if doc_set.certificate_holder.evidence and doc_set.certificate_holder.evidence.processing_status == 'ocr_extracted' %}
+                        <span class="badge-ocr" style="display: block; margin-top: 4px; font-size: 11px; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; font-weight: 500;">
+                            OCR ({{ doc_set.certificate_holder.evidence.ocr_provider or 'tesseract' }})
+                        </span>
+                        {% endif %}
                     </td>
                     <td>
                         {% if doc_set.certificate_holder.evidence %}
-                        <div class="evidence-quote">&ldquo;{{ doc_set.certificate_holder.evidence.source_text }}&rdquo;</div>
+                        <div class="evidence-quote"
+                            {% if doc_set.certificate_holder.evidence.bounding_box %}
+                            data-bbox-x="{{ doc_set.certificate_holder.evidence.bounding_box.x }}"
+                            data-bbox-y="{{ doc_set.certificate_holder.evidence.bounding_box.y }}"
+                            data-bbox-w="{{ doc_set.certificate_holder.evidence.bounding_box.width }}"
+                            data-bbox-h="{{ doc_set.certificate_holder.evidence.bounding_box.height }}"
+                            {% endif %}>
+                            &ldquo;{{ doc_set.certificate_holder.evidence.source_text }}&rdquo;
+                        </div>
+                        {% if doc_set.certificate_holder.evidence.bounding_box %}
+                        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
+                            BBox: [{{ (doc_set.certificate_holder.evidence.bounding_box.x * 100)|round(1) }}%, {{ (doc_set.certificate_holder.evidence.bounding_box.y * 100)|round(1) }}%, {{ (doc_set.certificate_holder.evidence.bounding_box.width * 100)|round(1) }}%, {{ (doc_set.certificate_holder.evidence.bounding_box.height * 100)|round(1) }}%]
+                        </div>
+                        {% endif %}
                         {% else %}
                         <span style="color: #64748b; font-style: italic;">No quote citation attached</span>
                         {% endif %}
@@ -108,10 +144,28 @@
                     </td>
                     <td>
                         Page {{ cov.evidence.page_number if cov.evidence else 1 }}
+                        {% if cov.evidence and cov.evidence.processing_status == 'ocr_extracted' %}
+                        <span class="badge-ocr" style="display: block; margin-top: 4px; font-size: 11px; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; font-weight: 500;">
+                            OCR ({{ cov.evidence.ocr_provider or 'tesseract' }})
+                        </span>
+                        {% endif %}
                     </td>
                     <td>
                         {% if cov.evidence %}
-                        <div class="evidence-quote">&ldquo;{{ cov.evidence.source_text }}&rdquo;</div>
+                        <div class="evidence-quote"
+                            {% if cov.evidence.bounding_box %}
+                            data-bbox-x="{{ cov.evidence.bounding_box.x }}"
+                            data-bbox-y="{{ cov.evidence.bounding_box.y }}"
+                            data-bbox-w="{{ cov.evidence.bounding_box.width }}"
+                            data-bbox-h="{{ cov.evidence.bounding_box.height }}"
+                            {% endif %}>
+                            &ldquo;{{ cov.evidence.source_text }}&rdquo;
+                        </div>
+                        {% if cov.evidence.bounding_box %}
+                        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
+                            BBox: [{{ (cov.evidence.bounding_box.x * 100)|round(1) }}%, {{ (cov.evidence.bounding_box.y * 100)|round(1) }}%, {{ (cov.evidence.bounding_box.width * 100)|round(1) }}%, {{ (cov.evidence.bounding_box.height * 100)|round(1) }}%]
+                        </div>
+                        {% endif %}
                         {% else %}
                         <span style="color: #64748b; font-style: italic;">No quote citation attached</span>
                         {% endif %}
@@ -138,10 +192,28 @@
                     </td>
                     <td>
                         Page {{ end.evidence.page_number if end.evidence else 1 }}
+                        {% if end.evidence and end.evidence.processing_status == 'ocr_extracted' %}
+                        <span class="badge-ocr" style="display: block; margin-top: 4px; font-size: 11px; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; font-weight: 500;">
+                            OCR ({{ end.evidence.ocr_provider or 'tesseract' }})
+                        </span>
+                        {% endif %}
                     </td>
                     <td>
                         {% if end.evidence %}
-                        <div class="evidence-quote">&ldquo;{{ end.evidence.source_text }}&rdquo;</div>
+                        <div class="evidence-quote"
+                            {% if end.evidence.bounding_box %}
+                            data-bbox-x="{{ end.evidence.bounding_box.x }}"
+                            data-bbox-y="{{ end.evidence.bounding_box.y }}"
+                            data-bbox-w="{{ end.evidence.bounding_box.width }}"
+                            data-bbox-h="{{ end.evidence.bounding_box.height }}"
+                            {% endif %}>
+                            &ldquo;{{ end.evidence.source_text }}&rdquo;
+                        </div>
+                        {% if end.evidence.bounding_box %}
+                        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
+                            BBox: [{{ (end.evidence.bounding_box.x * 100)|round(1) }}%, {{ (end.evidence.bounding_box.y * 100)|round(1) }}%, {{ (end.evidence.bounding_box.width * 100)|round(1) }}%, {{ (end.evidence.bounding_box.height * 100)|round(1) }}%]
+                        </div>
+                        {% endif %}
                         {% else %}
                         <span style="color: #64748b; font-style: italic;">No quote citation attached</span>
                         {% endif %}

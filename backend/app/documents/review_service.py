@@ -23,6 +23,7 @@ from fastapi import UploadFile
 
 from app.compliance.evaluator import ComplianceEvaluator
 from app.documents.processor import MAX_PDF_SIZE_BYTES, PDFProcessingError, PDFProcessor
+from app.extraction.ocr import BaseOCRProvider, TesseractOCRProvider
 from app.extraction.pipeline import ExtractionPipelineService, reconcile_cross_document_set
 from app.extraction.providers.base import BaseExtractionProvider
 from app.extraction.providers.mock import HonestApplicationMockProvider, MockExtractionProvider
@@ -127,10 +128,12 @@ class DocumentReviewService:
         self,
         repository: Optional[SubmissionRepository] = None,
         pdf_processor: Optional[PDFProcessor] = None,
+        ocr_provider: Optional[BaseOCRProvider] = None,
     ):
         init_db()
         self.repository = repository or SubmissionRepository()
         self.pdf_processor = pdf_processor or PDFProcessor()
+        self.ocr_provider = ocr_provider
         self.evaluator = ComplianceEvaluator()
 
     async def save_uploaded_file(
@@ -222,7 +225,17 @@ class DocumentReviewService:
             from app.extraction.providers import get_extraction_provider
             extraction_provider = get_extraction_provider(provider_name=provider_name)
 
-        pipeline_service = ExtractionPipelineService(extraction_provider=extraction_provider)
+        # Resolve OCR provider: use configured instance or detect local Tesseract
+        active_ocr_provider = self.ocr_provider
+        if active_ocr_provider is None:
+            tess = TesseractOCRProvider()
+            if tess.is_available():
+                active_ocr_provider = tess
+
+        pipeline_service = ExtractionPipelineService(
+            extraction_provider=extraction_provider,
+            ocr_provider=active_ocr_provider,
+        )
 
         doc_records: List[Dict[str, Any]] = []
         doc_sets: List[ExtractedDocumentSet] = []

@@ -117,6 +117,9 @@ class EvidenceReference(BaseModel):
     page_number: int = Field(ge=1, description="1-indexed source page")
     source_text: str = Field(description="Exact verbatim text excerpt from document")
     bounding_box: Optional[BoundingBox] = None
+    ocr_provider: Optional[str] = Field(default=None, description="OCR provider name if evidence was OCR-transcribed")
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Extraction or OCR confidence score")
+    processing_status: Optional[str] = Field(default=None, description="Processing state: native_digital, ocr_extracted, etc.")
 
 
 class MoneyValue(BaseModel):

@@ -336,12 +336,19 @@ class ExtractionPipelineService:
                         bounding_box = span.bounding_box
                         break
 
+        ocr_prov = getattr(matching_page, "ocr_provider", None) if matching_page else None
+        ocr_conf = getattr(matching_page, "ocr_confidence", None) if matching_page else None
+        proc_stat = "ocr_extracted" if ocr_prov else "native_digital"
+
         return EvidenceReference(
             document_id=document_id,
             document_type=document_type,
             page_number=quote.page_number,
             source_text=quote.source_text.strip(),
             bounding_box=bounding_box,
+            ocr_provider=ocr_prov,
+            confidence=ocr_conf,
+            processing_status=proc_stat,
         )
 
     def _build_money_value(self, raw_str: Optional[str], confidence: Optional[float]) -> Optional[MoneyValue]:
@@ -379,22 +386,47 @@ class ExtractionPipelineService:
         subcontractor_id: str,
     ) -> ExtractionPipelineResult:
         """Run the end-to-end extraction pipeline on an inspected PDF document."""
-        pages_to_process = inspection.pages
+        pages_to_process = list(inspection.pages)
 
-        # Check for scanned document with no text layer
-        if inspection.is_scanned or inspection.processing_status == DocumentProcessingStatus.REQUIRES_OCR:
+        # Multi-signal page routing: route only scanned pages requiring OCR
+        is_doc_scanned = inspection.is_scanned or inspection.processing_status == DocumentProcessingStatus.REQUIRES_OCR
+        scanned_pages = [
+            p for p in pages_to_process
+            if p.requires_ocr or p.is_scanned or (is_doc_scanned and not (p.text_content or "").strip())
+        ]
+        if is_doc_scanned and not scanned_pages and not any((p.text_content or "").strip() for p in pages_to_process):
+            scanned_pages = list(pages_to_process)
+
+        digital_pages = [p for p in pages_to_process if p not in scanned_pages]
+
+        if scanned_pages:
             if self.ocr_provider is None:
+                scanned_nums = [p.page_number for p in scanned_pages]
                 return ExtractionPipelineResult(
                     document_set=None,
                     processing_status=DocumentProcessingStatus.REQUIRES_OCR,
                     requires_ocr=True,
                     errors=[
-                        f"Document '{inspection.filename}' is a scanned or image-only PDF with no text layer. "
-                        "No OCR provider is configured to transcribe page content."
+                        f"Document '{inspection.filename}' contains {len(scanned_pages)} scanned page(s) "
+                        f"(pages {scanned_nums}) requiring OCR. No OCR provider is configured to transcribe page content."
                     ],
                 )
-            # Route to OCR provider
-            pages_to_process = self.ocr_provider.perform_ocr_on_pages(inspection.pages)
+
+            # Route ONLY scanned pages to OCR, preserving native extraction for digital pages
+            try:
+                ocr_results = self.ocr_provider.perform_ocr_on_pages(scanned_pages)
+                ocr_map = {p.page_number: p for p in ocr_results}
+                pages_to_process = [ocr_map.get(p.page_number, p) for p in pages_to_process]
+            except Exception as ocr_exc:
+                clean_ocr_err = sanitize_error_message(str(ocr_exc))
+                return ExtractionPipelineResult(
+                    document_set=None,
+                    processing_status=DocumentProcessingStatus.FAILED,
+                    errors=[f"OCR processing failed for document '{inspection.filename}': {clean_ocr_err}"],
+                    error_category="ocr_failure",
+                    error_type=ocr_exc.__class__.__name__,
+                    error_message=clean_ocr_err,
+                )
 
         # Call extraction provider
         try:

@@ -37,6 +37,7 @@ from app.extraction.ocr import (
     OCRError,
     TesseractNotFoundError,
     TesseractOCRProvider,
+    _find_tesseract_binary,
 )
 from app.extraction.pipeline import ExtractionPipelineService
 from app.extraction.providers.mock import HonestApplicationMockProvider
@@ -281,10 +282,23 @@ class TestMilestone33HybridOCR:
         assert res.error_category == "ocr_failure"
         assert "Scanner hardware timeout" in res.error_message
 
-    def test_08_missing_tesseract_installation(self):
+    def test_08_missing_tesseract_installation(self, monkeypatch: pytest.MonkeyPatch):
         """8. Missing Tesseract installation: Raises TesseractNotFoundError with installation instructions."""
+        # Isolate environment: simulate missing binary across custom path, env vars, PATH, and system paths
+        monkeypatch.delenv("TESSERACT_CMD", raising=False)
+        monkeypatch.delenv("TESSERACT_PATH", raising=False)
+        monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+        orig_is_file = Path.is_file
+        monkeypatch.setattr(
+            Path,
+            "is_file",
+            lambda p: False if "tesseract" in str(p).lower() else orig_is_file(p),
+        )
+
         provider = TesseractOCRProvider(tesseract_cmd="C:/nonexistent/binary/tesseract.exe")
         assert provider.is_available() is False
+        assert provider.tesseract_cmd is None
 
         # Attempting OCR without executable raises specific TesseractNotFoundError
         dummy_page = PDFPageInspection(
@@ -300,6 +314,33 @@ class TestMilestone33HybridOCR:
 
         assert "Tesseract OCR executable not found" in str(exc_info.value)
         assert "winget install" in str(exc_info.value) or "Tesseract" in str(exc_info.value)
+
+    def test_08b_system_tesseract_discovery(self, monkeypatch: pytest.MonkeyPatch):
+        """8b. System Tesseract discovery: Resolves system installation without explicit custom path."""
+        # 1. Deterministic simulated system discovery via PATH
+        monkeypatch.delenv("TESSERACT_CMD", raising=False)
+        monkeypatch.delenv("TESSERACT_PATH", raising=False)
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda cmd: r"C:\Tools\Tesseract-OCR\tesseract.exe" if "tesseract" in cmd.lower() else None,
+        )
+        orig_is_file = Path.is_file
+        monkeypatch.setattr(
+            Path,
+            "is_file",
+            lambda p: True if "tesseract" in str(p).lower() else orig_is_file(p),
+        )
+
+        provider_simulated = TesseractOCRProvider()
+        assert provider_simulated.tesseract_cmd == r"C:\Tools\Tesseract-OCR\tesseract.exe"
+
+        # 2. Live environment check: if real Tesseract is installed on host, verify unmocked discovery
+        monkeypatch.undo()
+        real_binary = _find_tesseract_binary()
+        if real_binary and Path(real_binary).is_file():
+            live_provider = TesseractOCRProvider()
+            assert live_provider.tesseract_cmd == real_binary
+            assert live_provider.is_available() is True
 
     def test_09_multiple_scanned_pages(self):
         """9. Multiple scanned pages: All pages processed with page numbering preserved."""

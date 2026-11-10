@@ -80,6 +80,22 @@ class TestPipelineComplianceE2E(unittest.TestCase):
                     general_aggregate="$2,000,000",
                     effective_date="01/01/2025",
                     expiration_date="01/01/2026",
+                    each_occurrence_evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="EACH OCCURRENCE: $1,000,000",
+                    ),
+                    general_aggregate_evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="GENERAL AGGREGATE: $2,000,000",
+                    ),
+                    effective_date_evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="EFF: 01/01/2025  EXP: 01/01/2026",
+                    ),
+                    expiration_date_evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="EFF: 01/01/2025  EXP: 01/01/2026",
+                    ),
                     evidence=RawEvidenceQuote(
                         page_number=1,
                         source_text="EACH OCCURRENCE: $1,000,000",
@@ -225,6 +241,18 @@ class TestPipelineComplianceE2E(unittest.TestCase):
                     each_occurrence="$1,000,000",
                     effective_date="01/01/2023",
                     expiration_date="01/01/2024",  # Expired as of 2025-06-15
+                    each_occurrence_evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="EACH OCCURRENCE: $1,000,000",
+                    ),
+                    effective_date_evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="POLICY EFF: 01/01/2023  EXP: 01/01/2024",
+                    ),
+                    expiration_date_evidence=RawEvidenceQuote(
+                        page_number=1,
+                        source_text="POLICY EFF: 01/01/2023  EXP: 01/01/2024",
+                    ),
                     evidence=RawEvidenceQuote(
                         page_number=1,
                         source_text="COMMERCIAL GENERAL LIABILITY - POLICY NUMBER: GL-98765432",

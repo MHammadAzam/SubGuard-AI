@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+
+{% block title %}User &amp; API Token Administration — SubGuard AI{% endblock %}
+
+{% block content %}
+<div class="sub-header-bar">
+    <div>
+        <h1 style="font-size: 24px; font-weight: 700; color: #0f172a;">Access Administration</h1>
+        <p style="color: #64748b; font-size: 13px; margin-top: 2px;">
+            Manage provisioned pilot accounts, roles, and revocable Bearer API tokens.
+        </p>
+    </div>
+    <div>
+        <a href="/dashboard" class="btn btn-secondary">&larr; Back to Dashboard</a>
+    </div>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px;">
+    <div class="card">
+        <div class="card-header">
+            <h2 class="card-title">Provision User</h2>
+        </div>
+        <div class="card-body">
+            <form id="createUserForm">
+                <div class="form-group">
+                    <label class="form-label" for="new_username">Username *</label>
+                    <input type="text" id="new_username" name="username" class="form-input" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="new_display_name">Display Name (Recorded in Audit Trail) *</label>
+                    <input type="text" id="new_display_name" name="display_name" class="form-input" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="new_role">Role *</label>
+                    <select id="new_role" name="role" class="form-select">
+                        <option value="viewer">viewer (Read-Only)</option>
+                        <option value="analyst">analyst (Evaluate &amp; Upload)</option>
+                        <option value="reviewer">reviewer (Human Review Decisions)</option>
+                        <option value="admin">admin (Full Administration)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="new_password">Initial Password (min 12 chars, 3 char classes) *</label>
+                    <input type="password" id="new_password" name="password" class="form-input" required>
+                </div>
+                <div id="userFormMsg" style="display: none; margin-bottom: 12px; padding: 8px 10px; border-radius: 4px; font-size: 13px;"></div>
+                <button type="submit" class="btn btn-primary" style="width: 100%;">Create Account</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h2 class="card-title">Issue Revocable API Token</h2>
+        </div>
+        <div class="card-body">
+            <form id="createTokenForm">
+                <div class="form-group">
+                    <label class="form-label" for="token_user_id">Account *</label>
+                    <select id="token_user_id" name="user_id" class="form-select" required>
+                        {% for u in users %}
+                        {% if u.is_active %}
+                        <option value="{{ u.id }}">{{ u.username }} ({{ u.role }})</option>
+                        {% endif %}
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="token_label">Token Label *</label>
+                    <input type="text" id="token_label" name="label" class="form-input" placeholder="e.g. CI Pipeline" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="token_ttl_days">Lifetime (Days, 1-365) *</label>
+                    <input type="number" id="token_ttl_days" name="ttl_days" class="form-input" value="30" min="1" max="365" required>
+                </div>
+                <div id="tokenFormMsg" style="display: none; margin-bottom: 12px; padding: 8px 10px; border-radius: 4px; font-size: 13px; word-break: break-all;"></div>
+                <button type="submit" class="btn btn-primary" style="width: 100%;">Generate Bearer Token</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom: 24px;">
+    <div class="card-header">
+        <h2 class="card-title">Provisioned Accounts</h2>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Username</th>
+                    <th>Display Name</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Created (UTC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in users %}
+                <tr>
+                    <td><code>{{ u.username }}</code></td>
+                    <td>{{ u.display_name }}</td>
+                    <td><span class="status-badge">{{ u.role }}</span></td>
+                    <td>{{ "Active" if u.is_active else "Disabled" }}</td>
+                    <td style="color: #64748b;">{{ u.created_at[:19].replace('T', ' ') }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Sessions &amp; API Tokens</h2>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Kind</th>
+                    <th>Account</th>
+                    <th>Label</th>
+                    <th>Expires (UTC)</th>
+                    <th>State</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in tokens %}
+                <tr>
+                    <td><code>{{ t.token_kind }}</code></td>
+                    <td>{{ t.username }} ({{ t.role }})</td>
+                    <td>{{ t.label or '-' }}</td>
+                    <td style="color: #64748b;">{{ t.expires_at[:19].replace('T', ' ') }}</td>
+                    <td>{{ "Revoked" if t.revoked_at else "Active" }}</td>
+                    <td>
+                        {% if not t.revoked_at %}
+                        <button type="button" class="btn btn-secondary btn-sm revoke-token-btn" data-token-id="{{ t.id }}">
+                            Revoke
+                        </button>
+                        {% else %}
+                        <span style="color: #94a3b8; font-size: 12px;">-</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+    function getCsrfToken() {
+        const meta = document.querySelector('meta[name="csrf-token"]');
+        return meta ? meta.getAttribute('content') : '';
+    }
+
+    document.getElementById('createUserForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const msgBox = document.getElementById('userFormMsg');
+        msgBox.style.display = 'none';
+        const fd = new FormData(this);
+        const res = await fetch('/api/v1/admin/users', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': getCsrfToken()
+            },
+            body: JSON.stringify({
+                username: fd.get('username'),
+                display_name: fd.get('display_name'),
+                role: fd.get('role'),
+                password: fd.get('password')
+            })
+        });
+        const data = await res.json();
+        msgBox.style.display = 'block';
+        if (!res.ok) {
+            msgBox.style.background = '#fee2e2';
+            msgBox.style.color = '#b91c1c';
+            msgBox.innerText = data.detail || 'Failed to create user';
+            return;
+        }
+        window.location.reload();
+    });
+
+    document.getElementById('createTokenForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const msgBox = document.getElementById('tokenFormMsg');
+        msgBox.style.display = 'none';
+        const fd = new FormData(this);
+        const res = await fetch('/api/v1/admin/tokens', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': getCsrfToken()
+            },
+            body: JSON.stringify({
+                user_id: fd.get('user_id'),
+                label: fd.get('label'),
+                ttl_days: Number(fd.get('ttl_days'))
+            })
+        });
+        const data = await res.json();
+        msgBox.style.display = 'block';
+        if (!res.ok) {
+            msgBox.style.background = '#fee2e2';
+            msgBox.style.color = '#b91c1c';
+            msgBox.innerText = data.detail || 'Failed to create token';
+            return;
+        }
+        msgBox.style.background = '#dcfce7';
+        msgBox.style.color = '#166534';
+        msgBox.innerText = 'Copy Bearer Token now (shown once): ' + data.token;
+    });
+
+    document.querySelectorAll('.revoke-token-btn').forEach(function(btn) {
+        btn.addEventListener('click', async function() {
+            const tokenId = this.getAttribute('data-token-id');
+            const res = await fetch('/api/v1/admin/tokens/' + tokenId + '/revoke', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'X-CSRF-Token': getCsrfToken() }
+            });
+            if (res.ok) {
+                window.location.reload();
+            }
+        });
+    });
+</script>
+{% endblock %}

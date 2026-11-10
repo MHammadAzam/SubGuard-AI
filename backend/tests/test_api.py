@@ -6,13 +6,17 @@ Tests both:
    serialization, and validation boundaries.
 """
 
+import tempfile
 import unittest
 from datetime import date
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.main import app, evaluate_compliance, EvaluationRequest, health_check
+from app.main import app, evaluate_compliance, EvaluationRequest, health_check, repository
+from app.persistence.database import init_db
 from app.schemas.insurance import ComplianceStatus
+from tests.fixtures.auth_helpers import authenticate_session_client
 from tests.fixtures.sample_data import (
     EVAL_DATE,
     sample_gl_coverage,
@@ -23,7 +27,17 @@ from tests.fixtures.sample_data import (
 
 class TestComplianceAPI(unittest.TestCase):
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "api_test.db"
+        self._orig_repo_db = repository.db_path
+        init_db(self.db_path)
+        repository.db_path = self.db_path
         self.client = TestClient(app)
+        authenticate_session_client(self.client, db_path=self.db_path, role="analyst")
+
+    def tearDown(self):
+        repository.db_path = self._orig_repo_db
+        self.temp_dir.cleanup()
 
     # =========================================================================
     # Direct Function Invocations

@@ -590,6 +590,10 @@ class TestComplianceEvaluator(unittest.TestCase):
 
         cov_no_evidence = sample_gl_coverage(occ_cents=100_000_000)
         cov_no_evidence.evidence = None  # No document evidence pointer
+        if cov_no_evidence.each_occurrence is not None:
+            cov_no_evidence.each_occurrence.evidence = None
+        if cov_no_evidence.general_aggregate is not None:
+            cov_no_evidence.general_aggregate.evidence = None
         doc_set = sample_subcontractor_document_set(gl_coverage=cov_no_evidence)
 
         res = self.evaluator.evaluate(doc_set, [req_limit], EVAL_DATE)
@@ -845,6 +849,8 @@ class TestComplianceEvaluator(unittest.TestCase):
         )
         cov = sample_gl_coverage(eff=date(2025, 1, 1), exp=date(2026, 1, 1))
         cov.evidence = None
+        if cov.effective_date is not None:
+            cov.effective_date.evidence = None
         doc_set = sample_subcontractor_document_set(gl_coverage=cov)
 
         result = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
@@ -1087,6 +1093,1240 @@ class TestComplianceEvaluator(unittest.TestCase):
         self.assertEqual(res_gemini.overall_status, res_openrouter.overall_status)
         self.assertEqual(res_gemini.findings[0].status, res_openrouter.findings[0].status)
         self.assertEqual(res_gemini.findings[0].reason_code, res_openrouter.findings[0].reason_code)
+
+
+class TestMilestone35DContractualDurationEnforcement(unittest.TestCase):
+    """Milestone 3.5D WP3: Contractual Duration & Endorsement Date Alignment Adversarial Tests."""
+
+    def setUp(self):
+        self.evaluator = ComplianceEvaluator()
+        self.ref_coi = make_evidence(
+            doc_id="doc_coi",
+            doc_type=DocumentType.COI,
+            page=1,
+            text="Policy Period: 01/01/2025 to 12/31/2026",
+        )
+        self.ref_end_full = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Policy Effective: 01/01/2025 Expiration Date: 12/31/2026 Form CG 20 10",
+        )
+        self.ref_end_short = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Policy Effective: 01/01/2025 Expiration Date: 06/30/2026 Form CG 20 10",
+        )
+
+    def test_wp3_01_required_endorsement_present_with_verified_dates_covering_full_period(self):
+        """1. Required endorsement present with verified dates covering the full contractual period -> COMPLIANT."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_DURATION_FULL",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured coverage required through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_full,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertFalse(res.requires_human_review)
+        self.assertEqual(res.findings[0].status, ComplianceStatus.COMPLIANT)
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id="doc_end",
+            endorsement_effective_date=date(2025, 1, 1),
+            endorsement_expiration_date=date(2026, 12, 31),
+            endorsement_date_evidence=(self.ref_end_full,),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_AI_DURATION_FULL",
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        self.assertFalse(rec.requires_human_review)
+        self.assertIsNone(rec.discrepancy_category)
+
+    def test_wp3_02_required_endorsement_present_but_expiration_precedes_deadline(self):
+        """2. Required endorsement present but expiration precedes contractual deadline -> NON_COMPLIANT."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_DURATION_SHORT",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured coverage required through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 6, 30),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_short,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.NON_COMPLIANT)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "ENDORSEMENT_PREMATURE_EXPIRATION")
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id="doc_end",
+            endorsement_effective_date=date(2025, 1, 1),
+            endorsement_expiration_date=date(2026, 6, 30),
+            endorsement_date_evidence=(self.ref_end_short,),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_AI_DURATION_SHORT",
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        self.assertTrue(rec.requires_human_review)
+        self.assertEqual(rec.discrepancy_category, DiscrepancyCategory.CONFIRMED_CONTRACTUAL_VIOLATION)
+        self.assertEqual(rec.review_reason_code, "PREMATURE_EXPIRATION_VIOLATION")
+
+    def test_wp3_03_required_endorsement_missing_when_explicitly_required(self):
+        """3. Required endorsement missing when explicitly required -> MISSING_EVIDENCE (not false COMPLIANT)."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_MISSING",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured coverage required through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.MISSING_EVIDENCE)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "ENDORSEMENT_NOT_FOUND")
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id=None,
+            endorsement_effective_date=None,
+            endorsement_expiration_date=None,
+            endorsement_date_evidence=(),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_AI_MISSING",
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        self.assertTrue(rec.requires_human_review)
+        self.assertEqual(rec.discrepancy_category, DiscrepancyCategory.MISSING_EVIDENCE)
+        self.assertEqual(rec.review_reason_code, "MISSING_REQUIRED_ENDORSEMENT_DOCUMENT")
+
+    def test_wp3_04_endorsement_present_but_effective_date_unsupported(self):
+        """4. Endorsement present but effective date unsupported by cited evidence -> REQUIRES_HUMAN_REVIEW."""
+        ref_exp_only = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Expiration Date: 12/31/2026 Form CG 20 10",
+        )
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_UNSUP_EFF",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured coverage required through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=ref_exp_only,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "ENDORSEMENT_DATE_EVIDENCE_UNSUPPORTED")
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id="doc_end",
+            endorsement_effective_date=date(2025, 1, 1),
+            endorsement_expiration_date=date(2026, 12, 31),
+            endorsement_date_evidence=(ref_exp_only,),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_AI_UNSUP_EFF",
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        self.assertTrue(rec.requires_human_review)
+        self.assertEqual(rec.discrepancy_category, DiscrepancyCategory.MISSING_EVIDENCE)
+        self.assertEqual(rec.review_reason_code, "UNSUPPORTED_DATE_EVIDENCE")
+
+    def test_wp3_05_endorsement_present_but_expiration_date_unsupported(self):
+        """5. Endorsement present but expiration date unsupported by cited evidence -> REQUIRES_HUMAN_REVIEW."""
+        ref_eff_only = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Effective Date: 01/01/2025 Form CG 20 10",
+        )
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_UNSUP_EXP",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured coverage required through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=ref_eff_only,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "ENDORSEMENT_DATE_EVIDENCE_UNSUPPORTED")
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id="doc_end",
+            endorsement_effective_date=date(2025, 1, 1),
+            endorsement_expiration_date=date(2026, 12, 31),
+            endorsement_date_evidence=(ref_eff_only,),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_AI_UNSUP_EXP",
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        self.assertTrue(rec.requires_human_review)
+        self.assertEqual(rec.discrepancy_category, DiscrepancyCategory.MISSING_EVIDENCE)
+        self.assertEqual(rec.review_reason_code, "UNSUPPORTED_DATE_EVIDENCE")
+
+    def test_wp3_06_policy_dates_satisfy_requirement_but_endorsement_dates_missing(self):
+        """6. Policy dates satisfy requirement but endorsement dates are missing -> MISSING_EVIDENCE."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_DATES_MISSING",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured coverage required through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        ref_nodate = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Form CG 20 10 04 13 Additional Insured Schedule",
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=None,
+            expiration_date=None,
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=ref_nodate,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.MISSING_EVIDENCE)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "ENDORSEMENT_DATES_MISSING")
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id="doc_end",
+            endorsement_effective_date=None,
+            endorsement_expiration_date=None,
+            endorsement_date_evidence=(),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_AI_DATES_MISSING",
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        self.assertTrue(rec.requires_human_review)
+        self.assertEqual(rec.discrepancy_category, DiscrepancyCategory.MISSING_EVIDENCE)
+        self.assertEqual(rec.review_reason_code, "MISSING_ENDORSEMENT_DATES")
+
+    def test_wp3_07_evidence_from_unrelated_document_cannot_establish_endorsement_duration(self):
+        """7. Evidence from an unrelated document (e.g. COI or invoice) cannot establish endorsement duration."""
+        ref_wrong_doc = make_evidence(
+            doc_id="doc_coi",
+            doc_type=DocumentType.COI,
+            page=1,
+            text="Effective: 01/01/2025 Expiration Date: 12/31/2026",
+        )
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_WRONG_DOC",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured coverage required through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=ref_wrong_doc,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "ENDORSEMENT_DATE_EVIDENCE_UNSUPPORTED")
+
+        with self.assertRaises(ValueError):
+            reconcile_dates(
+                policy_document_id="doc_coi",
+                policy_effective_date=date(2025, 1, 1),
+                policy_expiration_date=date(2026, 12, 31),
+                policy_date_evidence=(self.ref_coi,),
+                endorsement_document_id="doc_end",
+                endorsement_effective_date=date(2025, 1, 1),
+                endorsement_expiration_date=date(2026, 12, 31),
+                endorsement_date_evidence=(ref_wrong_doc,),
+                evaluation_date=EVAL_DATE,
+                contractual_duration_requirement_id="REQ_AI_WRONG_DOC",
+                required_coverage_end_date=date(2026, 12, 31),
+                is_duration_requirement_validated=True,
+            )
+
+    def test_wp3_08_conflicting_date_evidence_requires_review(self):
+        """8. Conflicting date evidence across endorsements or document set requires human review."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_CONFLICTING",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured coverage required through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end_a = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_full,
+        )
+        end_b = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 6, 30),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_short,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end_a, end_b],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "CONFLICTING_ENDORSEMENT_DATES")
+
+    def test_wp3_09_ambiguous_date_formats_cannot_establish_compliance(self):
+        """9. Ambiguous numeric date formats (e.g. 01/02/25 without convention) cannot establish compliance."""
+        ref_ambig = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Effective 01/02/25 Expiration Date 02/03/26 Form CG 20 10",
+        )
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_AMBIG",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured coverage required through 02/03/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 2, 3),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 2),
+            expiration_date=date(2026, 2, 3),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=ref_ambig,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "ENDORSEMENT_DATE_EVIDENCE_UNSUPPORTED")
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id="doc_end",
+            endorsement_effective_date=date(2025, 1, 2),
+            endorsement_expiration_date=date(2026, 2, 3),
+            endorsement_date_evidence=(ref_ambig,),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_AI_AMBIG",
+            required_coverage_end_date=date(2026, 2, 3),
+            is_duration_requirement_validated=True,
+        )
+        self.assertTrue(rec.requires_human_review)
+        self.assertEqual(rec.discrepancy_category, DiscrepancyCategory.MISSING_EVIDENCE)
+        self.assertEqual(rec.review_reason_code, "UNSUPPORTED_DATE_EVIDENCE")
+
+    def test_wp3_10_contractual_duration_requirement_absent_no_invented_duration(self):
+        """10. When duration requirement is absent, no duration requirement is invented."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_NO_DURATION",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured endorsement presence required without duration terms",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=None,
+            requires_coverage_through_policy_expiration=False,
+        )
+        ref_nodates = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Form CG 20 10 04 13 Additional Insured",
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=None,
+            expiration_date=None,
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=ref_nodates,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertFalse(res.requires_human_review)
+        self.assertEqual(res.findings[0].status, ComplianceStatus.COMPLIANT)
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id="doc_end",
+            endorsement_effective_date=date(2025, 1, 1),
+            endorsement_expiration_date=date(2025, 6, 30),
+            endorsement_date_evidence=(make_evidence(doc_id="doc_end", doc_type=DocumentType.ENDORSEMENT, text="Effective 01/01/2025 to 06/30/2025"),),
+            evaluation_date=date(2025, 3, 1),
+            contractual_duration_requirement_id=None,
+        )
+        self.assertFalse(rec.requires_human_review)
+        self.assertIsNone(rec.discrepancy_category)
+
+    def test_wp3_11_requirement_specifies_deadline_and_verified_endorsement_meets_it(self):
+        """11. Requirement rule_type CONTRACTUAL_DURATION specifies deadline and verified endorsement coverage meets it."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_DUR_PASS",
+            rule_type=RequirementType.CONTRACTUAL_DURATION,
+            description="Contractual duration requires Additional Insured through 12/31/2026",
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_full,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertFalse(res.requires_human_review)
+        self.assertEqual(res.findings[0].status, ComplianceStatus.COMPLIANT)
+
+    def test_wp3_12_requirement_specifies_deadline_and_verified_endorsement_fails_it(self):
+        """12. Requirement rule_type CONTRACTUAL_DURATION specifies deadline and verified endorsement coverage fails it."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_DUR_FAIL",
+            rule_type=RequirementType.CONTRACTUAL_DURATION,
+            description="Contractual duration requires Additional Insured through 12/31/2026",
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 9, 30),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=make_evidence(doc_id="doc_end", doc_type=DocumentType.ENDORSEMENT, text="Effective 01/01/2025 Expiration Date: 09/30/2026"),
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.NON_COMPLIANT)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "ENDORSEMENT_PREMATURE_EXPIRATION")
+
+    def test_wp3_13_existing_non_duration_compliance_behavior_remains_unchanged(self):
+        """13. Existing non-duration compliance behavior remains unchanged (limits, active policy, named insured)."""
+        req_limit = sample_gl_requirement(min_cents=100_000_000)
+        req_exp = InsuranceRequirement(
+            requirement_id="REQ_GL_EXP",
+            rule_type=RequirementType.POLICY_EXPIRATION,
+            description="Policy unexpired",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+        )
+        req_ni = InsuranceRequirement(
+            requirement_id="REQ_NI",
+            rule_type=RequirementType.NAMED_INSURED,
+            description="Named insured match",
+            required_entity_name="Apex Electrical Contractors LLC",
+        )
+        doc_set = sample_subcontractor_document_set()
+        res = self.evaluator.evaluate(doc_set, [req_limit, req_exp, req_ni], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertFalse(res.requires_human_review)
+
+    def test_wp3_14_missing_document_not_incorrectly_treated_as_verified_date_violation(self):
+        """14. A missing endorsement document is MISSING_EVIDENCE, not a verified date violation (NON_COMPLIANT)."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_MISSING_DISTINCTION",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured coverage required through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.findings[0].status, ComplianceStatus.MISSING_EVIDENCE)
+        self.assertNotEqual(res.findings[0].status, ComplianceStatus.NON_COMPLIANT)
+        self.assertEqual(res.findings[0].reason_code, "ENDORSEMENT_NOT_FOUND")
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id=None,
+            endorsement_effective_date=None,
+            endorsement_expiration_date=None,
+            endorsement_date_evidence=(),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_AI_MISSING_DISTINCTION",
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        self.assertEqual(rec.discrepancy_category, DiscrepancyCategory.MISSING_EVIDENCE)
+        self.assertNotEqual(rec.discrepancy_category, DiscrepancyCategory.CONFIRMED_CONTRACTUAL_VIOLATION)
+        self.assertEqual(rec.review_reason_code, "MISSING_REQUIRED_ENDORSEMENT_DOCUMENT")
+
+    def test_wp3_15_endorsement_with_different_policy_period_not_silently_accepted(self):
+        """15. An endorsement with a different policy period is not silently accepted."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_AI_POLICY_SPAN",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured coverage required through policy expiration",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            requires_coverage_through_policy_expiration=True,
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2025, 6, 30),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=make_evidence(doc_id="doc_end", doc_type=DocumentType.ENDORSEMENT, text="Effective 01/01/2025 to 06/30/2025"),
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 1, 1)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.NON_COMPLIANT)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "ENDORSEMENT_PREMATURE_EXPIRATION")
+
+        ref_coi_2026_jan = make_evidence(
+            doc_id="doc_coi",
+            doc_type=DocumentType.COI,
+            page=1,
+            text="Policy Period: 01/01/2025 to 01/01/2026",
+        )
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 1, 1),
+            policy_date_evidence=(ref_coi_2026_jan,),
+            endorsement_document_id="doc_end",
+            endorsement_effective_date=date(2025, 1, 1),
+            endorsement_expiration_date=date(2025, 6, 30),
+            endorsement_date_evidence=(make_evidence(doc_id="doc_end", doc_type=DocumentType.ENDORSEMENT, text="Effective 01/01/2025 to 06/30/2025"),),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_AI_POLICY_SPAN",
+            requires_coverage_through_policy_expiration=True,
+            is_duration_requirement_validated=True,
+        )
+        self.assertTrue(rec.requires_human_review)
+        self.assertEqual(rec.discrepancy_category, DiscrepancyCategory.CONFIRMED_CONTRACTUAL_VIOLATION)
+        self.assertEqual(rec.review_reason_code, "PREMATURE_EXPIRATION_VIOLATION")
+
+    # -------------------------------------------------------------------------
+    # WP3 Final Remediation A: Conflicting Dates Within One Evidence Snippet
+    # -------------------------------------------------------------------------
+
+    def test_wp3_a01_two_different_expiration_dates_in_one_snippet(self):
+        """A1. Two distinct expiration dates in one snippet fail closed to human review."""
+        ref_conflict_exp = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Effective Date: 01/01/2025. Expiration Date: 12/31/2026. Amended Expiration Date: 06/30/2026.",
+        )
+        req = InsuranceRequirement(
+            requirement_id="REQ_WP3_A01",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=ref_conflict_exp,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "CONFLICTING_DATE_EVIDENCE")
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id="doc_end",
+            endorsement_effective_date=date(2025, 1, 1),
+            endorsement_expiration_date=date(2026, 12, 31),
+            endorsement_date_evidence=(ref_conflict_exp,),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_WP3_A01",
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        self.assertTrue(rec.requires_human_review)
+        self.assertEqual(rec.discrepancy_category, DiscrepancyCategory.DOCUMENT_DISCREPANCY)
+        self.assertEqual(rec.review_reason_code, "CONFLICTING_DATE_EVIDENCE")
+
+    def test_wp3_a02_two_different_effective_dates_in_one_snippet(self):
+        """A2. Two distinct effective dates in one snippet fail closed to human review."""
+        ref_conflict_eff = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Effective Date: 01/01/2025. Superseding Effective Date: 03/01/2025. Expiration Date: 12/31/2026.",
+        )
+        req = InsuranceRequirement(
+            requirement_id="REQ_WP3_A02",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=ref_conflict_eff,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "CONFLICTING_DATE_EVIDENCE")
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id="doc_end",
+            endorsement_effective_date=date(2025, 1, 1),
+            endorsement_expiration_date=date(2026, 12, 31),
+            endorsement_date_evidence=(ref_conflict_eff,),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_WP3_A02",
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        self.assertTrue(rec.requires_human_review)
+        self.assertEqual(rec.discrepancy_category, DiscrepancyCategory.DOCUMENT_DISCREPANCY)
+        self.assertEqual(rec.review_reason_code, "CONFLICTING_DATE_EVIDENCE")
+
+    def test_wp3_a03_valid_effective_expiration_range_in_one_snippet(self):
+        """A3. Valid effective/expiration range in one snippet is NOT treated as a conflict."""
+        ref_range = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Endorsement Coverage Period: 01/01/2025 to 12/31/2026 Form CG 20 10",
+        )
+        req = InsuranceRequirement(
+            requirement_id="REQ_WP3_A03",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=ref_range,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertFalse(res.requires_human_review)
+
+        rec = reconcile_dates(
+            policy_document_id="doc_coi",
+            policy_effective_date=date(2025, 1, 1),
+            policy_expiration_date=date(2026, 12, 31),
+            policy_date_evidence=(self.ref_coi,),
+            endorsement_document_id="doc_end",
+            endorsement_effective_date=date(2025, 1, 1),
+            endorsement_expiration_date=date(2026, 12, 31),
+            endorsement_date_evidence=(ref_range,),
+            evaluation_date=EVAL_DATE,
+            contractual_duration_requirement_id="REQ_WP3_A03",
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        self.assertFalse(rec.requires_human_review)
+        self.assertIsNone(rec.discrepancy_category)
+
+    def test_wp3_a04_matching_date_alongside_contradictory_date_in_one_snippet(self):
+        """A4. A matching date alongside a contradictory date in one snippet must still fail closed."""
+        ref_mixed = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Policy Effective Date: 01/01/2025 Expiration Date: 12/31/2026 (Schedule Note: Expiration Date: September 30, 2026)",
+        )
+        req = InsuranceRequirement(
+            requirement_id="REQ_WP3_A04",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=ref_mixed,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "CONFLICTING_DATE_EVIDENCE")
+
+    def test_wp3_a05_conflicting_evidence_produces_requires_human_review_not_compliant(self):
+        """A5. Full evaluation packet with otherwise valid policy/limits/insured cannot reach COMPLIANT when date snippet conflicts."""
+        ref_conflict = make_evidence(
+            doc_id="doc_end",
+            doc_type=DocumentType.ENDORSEMENT,
+            page=1,
+            text="Effective 2025-01-01 Expiration: 2026-12-31. Revised Expiration: 2026-08-15.",
+        )
+        req_limit = sample_gl_requirement(min_cents=100_000_000)
+        req_dur = InsuranceRequirement(
+            requirement_id="REQ_WP3_A05",
+            rule_type=RequirementType.CONTRACTUAL_DURATION,
+            description="Additional Insured must remain active through 12/31/2026",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            required_coverage_end_date=date(2026, 12, 31),
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=ref_conflict,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(occ_cents=100_000_000, exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req_limit, req_dur], EVAL_DATE)
+        self.assertNotEqual(res.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+
+    # -------------------------------------------------------------------------
+    # WP3 Final Remediation B: Ambiguous Multi-Policy Selection
+    # -------------------------------------------------------------------------
+
+    def test_wp3_b01_one_policy_and_omitted_coverage_type(self):
+        """B1. When coverage_type is omitted and exactly one policy exists, use it cleanly."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_WP3_B01",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Additional Insured must span policy period",
+            coverage_type=None,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            requires_coverage_through_policy_expiration=True,
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_full,
+        )
+        doc_set = sample_subcontractor_document_set(
+            gl_coverage=sample_gl_coverage(exp=date(2026, 12, 31)),
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertFalse(res.requires_human_review)
+
+    def test_wp3_b02_multiple_policies_different_expiration_dates_omitted_coverage_type(self):
+        """B2. Multiple policies with different expiration dates and omitted coverage_type -> AMBIGUOUS_APPLICABLE_POLICY."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_WP3_B02",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Endorsement must span policy expiration (coverage_type omitted)",
+            coverage_type=None,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            requires_coverage_through_policy_expiration=True,
+            is_duration_requirement_validated=True,
+        )
+        gl_cov = sample_gl_coverage(exp=date(2026, 12, 31))
+        auto_cov = CoverageExtraction(
+            coverage_type=CoverageType.AUTO_LIABILITY,
+            policy_number="CA-200",
+            effective_date=DateValue(date=date(2025, 1, 1), raw_text="01/01/2025", confidence=0.95),
+            expiration_date=DateValue(date=date(2026, 6, 30), raw_text="06/30/2026", confidence=0.95),
+            evidence=make_evidence(text="Auto Policy Expiration 06/30/2026"),
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            applicable_policy=None,
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_full,
+        )
+        doc_set = ExtractedDocumentSet(
+            subcontractor_id="sub_multi_diff",
+            coverages=[gl_cov, auto_cov],
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "AMBIGUOUS_APPLICABLE_POLICY")
+
+    def test_wp3_b03_multiple_policies_same_expiration_date_different_coverage_types(self):
+        """B3. Multiple policies sharing the same expiration date with differing coverage types are NOT interchangeable."""
+        req = InsuranceRequirement(
+            requirement_id="REQ_WP3_B03",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Endorsement must span policy expiration (coverage_type omitted)",
+            coverage_type=None,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            requires_coverage_through_policy_expiration=True,
+            is_duration_requirement_validated=True,
+        )
+        gl_cov = sample_gl_coverage(exp=date(2026, 12, 31))
+        auto_cov = CoverageExtraction(
+            coverage_type=CoverageType.AUTO_LIABILITY,
+            policy_number="CA-200",
+            effective_date=DateValue(date=date(2025, 1, 1), raw_text="01/01/2025", confidence=0.95),
+            expiration_date=DateValue(date=date(2026, 12, 31), raw_text="12/31/2026", confidence=0.95),
+            evidence=make_evidence(text="Auto Policy Expiration 12/31/2026"),
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            applicable_policy=None,
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_full,
+        )
+        doc_set = ExtractedDocumentSet(
+            subcontractor_id="sub_multi_same_exp",
+            coverages=[gl_cov, auto_cov],
+            endorsements=[end],
+        )
+        res = self.evaluator.evaluate(doc_set, [req], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res.requires_human_review)
+        self.assertEqual(res.findings[0].reason_code, "AMBIGUOUS_APPLICABLE_POLICY")
+
+    def test_wp3_b04_explicit_gl_selection_from_gl_auto_excess_packet(self):
+        """B4. Explicit GL coverage_type selects GL (even when Auto is coverages[0] and Excess is coverages[2])."""
+        auto_cov = CoverageExtraction(
+            coverage_type=CoverageType.AUTO_LIABILITY,
+            policy_number="CA-200",
+            effective_date=DateValue(date=date(2025, 1, 1), raw_text="01/01/2025", confidence=0.95),
+            expiration_date=DateValue(date=date(2026, 6, 30), raw_text="06/30/2026", confidence=0.95),
+            evidence=make_evidence(text="Auto Policy CA-200"),
+        )
+        gl_cov = sample_gl_coverage(exp=date(2026, 12, 31))
+        excess_cov = CoverageExtraction(
+            coverage_type=CoverageType.UMBRELLA_EXCESS,
+            policy_number="EX-300",
+            effective_date=DateValue(date=date(2025, 1, 1), raw_text="01/01/2025", confidence=0.95),
+            expiration_date=DateValue(date=date(2027, 6, 30), raw_text="06/30/2027", confidence=0.95),
+            evidence=make_evidence(text="Excess Policy EX-300"),
+        )
+        req_gl = InsuranceRequirement(
+            requirement_id="REQ_WP3_B04",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="GL Additional Insured must span GL policy expiration",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            requires_coverage_through_policy_expiration=True,
+            is_duration_requirement_validated=True,
+        )
+        end_gl_match = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            applicable_policy="GL-987654-01",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_full,
+        )
+        # Put Auto first and Excess last to verify coverage_type=GENERAL_LIABILITY selects GL (index 1)
+        doc_set_pass = ExtractedDocumentSet(
+            subcontractor_id="sub_gl_packet",
+            coverages=[auto_cov, gl_cov, excess_cov],
+            endorsements=[end_gl_match],
+        )
+        res_pass = self.evaluator.evaluate(doc_set_pass, [req_gl], EVAL_DATE)
+        self.assertEqual(res_pass.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertFalse(res_pass.requires_human_review)
+
+        # If endorsement expires 06/30/2026 (matches Auto[0], precedes GL 12/31/2026) -> NON_COMPLIANT against GL
+        end_gl_short = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            applicable_policy="GL-987654-01",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 6, 30),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_short,
+        )
+        doc_set_fail = ExtractedDocumentSet(
+            subcontractor_id="sub_gl_packet_fail",
+            coverages=[auto_cov, gl_cov, excess_cov],
+            endorsements=[end_gl_short],
+        )
+        res_fail = self.evaluator.evaluate(doc_set_fail, [req_gl], EVAL_DATE)
+        self.assertEqual(res_fail.overall_status, ComplianceStatus.NON_COMPLIANT)
+        self.assertEqual(res_fail.findings[0].reason_code, "ENDORSEMENT_PREMATURE_EXPIRATION")
+
+    def test_wp3_b05_explicit_auto_selection_from_same_packet(self):
+        """B5. Explicit AUTO_LIABILITY coverage_type selects Auto from GL + Auto + Excess packet."""
+        gl_cov = sample_gl_coverage(exp=date(2026, 12, 31))
+        auto_cov = CoverageExtraction(
+            coverage_type=CoverageType.AUTO_LIABILITY,
+            policy_number="CA-200",
+            effective_date=DateValue(date=date(2025, 1, 1), raw_text="01/01/2025", confidence=0.95),
+            expiration_date=DateValue(date=date(2026, 6, 30), raw_text="06/30/2026", confidence=0.95),
+            evidence=make_evidence(text="Auto Policy CA-200"),
+        )
+        excess_cov = CoverageExtraction(
+            coverage_type=CoverageType.UMBRELLA_EXCESS,
+            policy_number="EX-300",
+            effective_date=DateValue(date=date(2025, 1, 1), raw_text="01/01/2025", confidence=0.95),
+            expiration_date=DateValue(date=date(2027, 6, 30), raw_text="06/30/2027", confidence=0.95),
+            evidence=make_evidence(text="Excess Policy EX-300"),
+        )
+        req_auto = InsuranceRequirement(
+            requirement_id="REQ_WP3_B05",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Auto Additional Insured must span Auto policy expiration",
+            coverage_type=CoverageType.AUTO_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            requires_coverage_through_policy_expiration=True,
+            is_duration_requirement_validated=True,
+        )
+        end_auto = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CA 20 48 10 13",
+            applicable_policy="CA-200",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 6, 30),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_short,
+        )
+        doc_set = ExtractedDocumentSet(
+            subcontractor_id="sub_auto_packet",
+            coverages=[gl_cov, auto_cov, excess_cov],
+            endorsements=[end_auto],
+        )
+        res = self.evaluator.evaluate(doc_set, [req_auto], EVAL_DATE)
+        self.assertEqual(res.overall_status, ComplianceStatus.COMPLIANT)
+        self.assertFalse(res.requires_human_review)
+
+    def test_wp3_b06_no_applicable_policy(self):
+        """B6. When no applicable policy exists, preserve unresolved human-review outcome."""
+        req_omitted = InsuranceRequirement(
+            requirement_id="REQ_WP3_B06_EMPTY",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="Endorsement must span policy expiration",
+            coverage_type=None,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            requires_coverage_through_policy_expiration=True,
+            is_duration_requirement_validated=True,
+        )
+        end = EndorsementExtraction(
+            endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            form_number="CG 20 10 04 13",
+            effective_date=date(2025, 1, 1),
+            expiration_date=date(2026, 12, 31),
+            is_standard_form=True,
+            manuscript_clause_detected=False,
+            manuscript_status="NOT_DETECTED",
+            independent_integrity_verified=True,
+            evidence=self.ref_end_full,
+        )
+        doc_set_empty = ExtractedDocumentSet(
+            subcontractor_id="sub_no_pol",
+            coverages=[],
+            endorsements=[end],
+        )
+        res_empty = self.evaluator.evaluate(doc_set_empty, [req_omitted], EVAL_DATE)
+        self.assertEqual(res_empty.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res_empty.requires_human_review)
+        self.assertEqual(res_empty.findings[0].reason_code, "POLICY_EXPIRATION_UNKNOWN_FOR_DURATION")
+
+        # Also test explicit GL requirement when only Auto policy exists
+        req_gl_only = InsuranceRequirement(
+            requirement_id="REQ_WP3_B06_MISMATCH",
+            rule_type=RequirementType.ENDORSEMENT_PRESENCE,
+            description="GL endorsement must span GL policy expiration",
+            coverage_type=CoverageType.GENERAL_LIABILITY,
+            required_endorsement_type=EndorsementType.ADDITIONAL_INSURED,
+            requires_coverage_through_policy_expiration=True,
+            is_duration_requirement_validated=True,
+        )
+        auto_cov = CoverageExtraction(
+            coverage_type=CoverageType.AUTO_LIABILITY,
+            policy_number="CA-200",
+            effective_date=DateValue(date=date(2025, 1, 1), raw_text="01/01/2025", confidence=0.95),
+            expiration_date=DateValue(date=date(2026, 12, 31), raw_text="12/31/2026", confidence=0.95),
+            evidence=make_evidence(text="Auto Policy CA-200"),
+        )
+        doc_set_wrong_cov = ExtractedDocumentSet(
+            subcontractor_id="sub_only_auto",
+            coverages=[auto_cov],
+            endorsements=[end],
+        )
+        res_wrong = self.evaluator.evaluate(doc_set_wrong_cov, [req_gl_only], EVAL_DATE)
+        self.assertEqual(res_wrong.overall_status, ComplianceStatus.REQUIRES_HUMAN_REVIEW)
+        self.assertTrue(res_wrong.requires_human_review)
+        self.assertEqual(res_wrong.findings[0].reason_code, "POLICY_EXPIRATION_UNKNOWN_FOR_DURATION")
 
 
 if __name__ == "__main__":

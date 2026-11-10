@@ -227,42 +227,137 @@ class HonestApplicationMockProvider(BaseExtractionProvider):
                 if cert_holder_val:
                     break
 
-        # 2. Coverages Extraction
+        # 2. Coverages Extraction (page- and section-scoped to preserve exact field provenance)
         raw_coverages: List[RawCoverageSection] = []
+        has_gl = "COMMERCIAL GENERAL LIABILITY" in full_text or "GENERAL LIABILITY" in full_text
+        has_al = "AUTOMOBILE LIABILITY" in full_text
+        has_wc = "WORKERS COMPENSATION" in full_text
 
-        if "COMMERCIAL GENERAL LIABILITY" in full_text or "GENERAL LIABILITY" in full_text:
-            gl_pol: Optional[str] = None
-            gl_eff: Optional[str] = None
-            gl_exp: Optional[str] = None
-            gl_occ: Optional[str] = None
-            gl_agg: Optional[str] = None
-            gl_occ_quote: Optional[str] = None
-            gl_dates_quote: Optional[str] = None
-            gl_pol_quote: Optional[str] = None
+        gl_pol: Optional[str] = None
+        gl_eff: Optional[str] = None
+        gl_exp: Optional[str] = None
+        gl_occ: Optional[str] = None
+        gl_agg: Optional[str] = None
+        gl_pol_quote: Optional[Tuple[int, str]] = None
+        gl_eff_quote: Optional[Tuple[int, str]] = None
+        gl_exp_quote: Optional[Tuple[int, str]] = None
+        gl_occ_quote: Optional[Tuple[int, str]] = None
+        gl_agg_quote: Optional[Tuple[int, str]] = None
 
-            for line in full_text.split("\n"):
-                if "POLICY NUMBER:" in line and "GL-" in line:
-                    m = re.search(r"POLICY NUMBER:\s*(GL-[0-9A-Za-z]+)", line)
-                    if m:
-                        gl_pol = m.group(1)
-                        gl_pol_quote = line.strip()
-                if "EFF:" in line or "POLICY EFF:" in line:
-                    m_dates = re.findall(r"(\d{2}/\d{2}/\d{4})", line)
-                    if len(m_dates) >= 2:
-                        gl_eff = m_dates[0]
-                        gl_exp = m_dates[1]
-                        gl_dates_quote = line.strip()
-                if "EACH OCCURRENCE:" in line:
-                    m_occ = re.search(r"EACH OCCURRENCE:\s*\$([0-9,]+)", line)
-                    if m_occ:
-                        gl_occ = f"${m_occ.group(1)}"
-                        gl_occ_quote = line.strip()
-                if "GENERAL AGGREGATE:" in line:
-                    m_agg = re.search(r"GENERAL AGGREGATE:\s*\$([0-9,]+)", line)
-                    if m_agg:
-                        gl_agg = f"${m_agg.group(1)}"
+        al_pol: Optional[str] = None
+        al_csl: Optional[str] = None
+        al_eff: Optional[str] = None
+        al_exp: Optional[str] = None
+        al_csl_quote: Optional[Tuple[int, str]] = None
+        al_eff_quote: Optional[Tuple[int, str]] = None
+        al_exp_quote: Optional[Tuple[int, str]] = None
 
-            gl_ev_quote = gl_occ_quote or gl_dates_quote or gl_pol_quote
+        wc_pol: Optional[str] = None
+        wc_acc: Optional[str] = None
+        wc_eff: Optional[str] = None
+        wc_exp: Optional[str] = None
+        wc_acc_quote: Optional[Tuple[int, str]] = None
+        wc_eff_quote: Optional[Tuple[int, str]] = None
+        wc_exp_quote: Optional[Tuple[int, str]] = None
+
+        def _extract_section_dates(
+            line_str: str,
+            page_num: int,
+            cur_eff: Optional[str],
+            cur_exp: Optional[str],
+            cur_eff_q: Optional[Tuple[int, str]],
+            cur_exp_q: Optional[Tuple[int, str]],
+        ) -> Tuple[Optional[str], Optional[str], Optional[Tuple[int, str]], Optional[Tuple[int, str]]]:
+            stripped = line_str.strip()
+            has_eff_lbl = any(k in stripped for k in ("POLICY EFF", "EFF:", "EFFECTIVE"))
+            has_exp_lbl = any(k in stripped for k in ("POLICY EXP", "EXP:", "EXPIRATION"))
+            m_dates = re.findall(r"(\d{2}/\d{2}/\d{4})", stripped)
+            if has_eff_lbl and has_exp_lbl and len(m_dates) >= 2:
+                return (
+                    cur_eff or m_dates[0],
+                    cur_exp or m_dates[1],
+                    cur_eff_q or (page_num, stripped),
+                    cur_exp_q or (page_num, stripped),
+                )
+            if has_eff_lbl and m_dates and cur_eff is None:
+                cur_eff = m_dates[0]
+                cur_eff_q = (page_num, stripped)
+            if has_exp_lbl and m_dates and cur_exp is None:
+                cur_exp = m_dates[-1]
+                cur_exp_q = (page_num, stripped)
+            return cur_eff, cur_exp, cur_eff_q, cur_exp_q
+
+        current_section: Optional[str] = None
+        for p_idx, p in enumerate(pages, 1):
+            for raw_line in p.text_content.split("\n"):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                upper = line.upper()
+                if "COMMERCIAL GENERAL LIABILITY" in upper or (upper.startswith("GENERAL LIABILITY") and "POLICY" not in upper):
+                    current_section = "gl"
+                    continue
+                elif "AUTOMOBILE LIABILITY" in upper:
+                    current_section = "al"
+                    continue
+                elif "WORKERS COMPENSATION" in upper:
+                    current_section = "wc"
+                    continue
+                elif "UMBRELLA LIAB" in upper or "EXCESS LIAB" in upper:
+                    current_section = "umb"
+                    continue
+                elif upper.startswith("DESCRIPTION OF OPERATIONS") or upper.startswith("CERTIFICATE HOLDER") or upper.startswith("REMARKS"):
+                    current_section = "other"
+                    continue
+
+                if current_section == "gl" or (current_section is None and has_gl):
+                    if "POLICY NUMBER:" in line and "GL-" in line and gl_pol is None:
+                        m = re.search(r"POLICY NUMBER:\s*(GL-[0-9A-Za-z]+)", line)
+                        if m:
+                            gl_pol = m.group(1)
+                            gl_pol_quote = (p_idx, line)
+                    gl_eff, gl_exp, gl_eff_quote, gl_exp_quote = _extract_section_dates(
+                        line, p_idx, gl_eff, gl_exp, gl_eff_quote, gl_exp_quote
+                    )
+                    if "EACH OCCURRENCE:" in line and gl_occ is None:
+                        m_occ = re.search(r"EACH OCCURRENCE:\s*\$([0-9,]+)", line)
+                        if m_occ:
+                            gl_occ = f"${m_occ.group(1)}"
+                            gl_occ_quote = (p_idx, line)
+                    if "GENERAL AGGREGATE:" in line and gl_agg is None:
+                        m_agg = re.search(r"GENERAL AGGREGATE:\s*\$([0-9,]+)", line)
+                        if m_agg:
+                            gl_agg = f"${m_agg.group(1)}"
+                            gl_agg_quote = (p_idx, line)
+                elif current_section == "al":
+                    if "POLICY NUMBER:" in line and "AL-" in line and al_pol is None:
+                        m = re.search(r"POLICY NUMBER:\s*(AL-[0-9A-Za-z]+)", line)
+                        if m:
+                            al_pol = m.group(1)
+                    al_eff, al_exp, al_eff_quote, al_exp_quote = _extract_section_dates(
+                        line, p_idx, al_eff, al_exp, al_eff_quote, al_exp_quote
+                    )
+                    if "COMBINED SINGLE LIMIT:" in line and al_csl is None:
+                        m_csl = re.search(r"COMBINED SINGLE LIMIT:\s*\$([0-9,]+)", line)
+                        if m_csl:
+                            al_csl = f"${m_csl.group(1)}"
+                            al_csl_quote = (p_idx, line)
+                elif current_section == "wc":
+                    if "POLICY NUMBER:" in line and "WC-" in line and wc_pol is None:
+                        m = re.search(r"POLICY NUMBER:\s*(WC-[0-9A-Za-z]+)", line)
+                        if m:
+                            wc_pol = m.group(1)
+                    wc_eff, wc_exp, wc_eff_quote, wc_exp_quote = _extract_section_dates(
+                        line, p_idx, wc_eff, wc_exp, wc_eff_quote, wc_exp_quote
+                    )
+                    if "E.L. EACH ACCIDENT:" in line and wc_acc is None:
+                        m_acc = re.search(r"E.L. EACH ACCIDENT:\s*\$([0-9,]+)", line)
+                        if m_acc:
+                            wc_acc = f"${m_acc.group(1)}"
+                            wc_acc_quote = (p_idx, line)
+
+        if has_gl:
+            gl_ev = gl_occ_quote or gl_exp_quote or gl_eff_quote or gl_pol_quote
             raw_coverages.append(
                 RawCoverageSection(
                     coverage_type="general_liability",
@@ -271,57 +366,69 @@ class HonestApplicationMockProvider(BaseExtractionProvider):
                     expiration_date=gl_exp,
                     each_occurrence=gl_occ,
                     general_aggregate=gl_agg,
-                    evidence=RawEvidenceQuote(page_number=1, source_text=gl_ev_quote, confidence=0.98) if gl_ev_quote else None,
+                    each_occurrence_evidence=RawEvidenceQuote(
+                        page_number=gl_occ_quote[0], source_text=gl_occ_quote[1], confidence=0.98
+                    ) if gl_occ_quote else None,
+                    general_aggregate_evidence=RawEvidenceQuote(
+                        page_number=gl_agg_quote[0], source_text=gl_agg_quote[1], confidence=0.98
+                    ) if gl_agg_quote else None,
+                    effective_date_evidence=RawEvidenceQuote(
+                        page_number=gl_eff_quote[0], source_text=gl_eff_quote[1], confidence=0.98
+                    ) if gl_eff_quote else None,
+                    expiration_date_evidence=RawEvidenceQuote(
+                        page_number=gl_exp_quote[0], source_text=gl_exp_quote[1], confidence=0.98
+                    ) if gl_exp_quote else None,
+                    evidence=RawEvidenceQuote(
+                        page_number=gl_ev[0], source_text=gl_ev[1], confidence=0.98
+                    ) if gl_ev else None,
                     confidence=0.98,
                 )
             )
 
-        if "AUTOMOBILE LIABILITY" in full_text:
-            al_pol: Optional[str] = None
-            al_csl: Optional[str] = None
-            al_csl_quote: Optional[str] = None
-            for line in full_text.split("\n"):
-                if "POLICY NUMBER:" in line and "AL-" in line:
-                    m = re.search(r"POLICY NUMBER:\s*(AL-[0-9A-Za-z]+)", line)
-                    if m:
-                        al_pol = m.group(1)
-                if "COMBINED SINGLE LIMIT:" in line:
-                    m_csl = re.search(r"COMBINED SINGLE LIMIT:\s*\$([0-9,]+)", line)
-                    if m_csl:
-                        al_csl = f"${m_csl.group(1)}"
-                        al_csl_quote = line.strip()
-
+        if has_al:
             raw_coverages.append(
                 RawCoverageSection(
                     coverage_type="auto_liability",
                     policy_number=al_pol,
+                    effective_date=al_eff,
+                    expiration_date=al_exp,
                     combined_single_limit=al_csl,
-                    evidence=RawEvidenceQuote(page_number=1, source_text=al_csl_quote, confidence=0.98) if al_csl_quote else None,
+                    combined_single_limit_evidence=RawEvidenceQuote(
+                        page_number=al_csl_quote[0], source_text=al_csl_quote[1], confidence=0.98
+                    ) if al_csl_quote else None,
+                    effective_date_evidence=RawEvidenceQuote(
+                        page_number=al_eff_quote[0], source_text=al_eff_quote[1], confidence=0.98
+                    ) if al_eff_quote else None,
+                    expiration_date_evidence=RawEvidenceQuote(
+                        page_number=al_exp_quote[0], source_text=al_exp_quote[1], confidence=0.98
+                    ) if al_exp_quote else None,
+                    evidence=RawEvidenceQuote(
+                        page_number=al_csl_quote[0], source_text=al_csl_quote[1], confidence=0.98
+                    ) if al_csl_quote else None,
                     confidence=0.98,
                 )
             )
 
-        if "WORKERS COMPENSATION" in full_text:
-            wc_pol: Optional[str] = None
-            wc_acc: Optional[str] = None
-            wc_acc_quote: Optional[str] = None
-            for line in full_text.split("\n"):
-                if "POLICY NUMBER:" in line and "WC-" in line:
-                    m = re.search(r"POLICY NUMBER:\s*(WC-[0-9A-Za-z]+)", line)
-                    if m:
-                        wc_pol = m.group(1)
-                if "E.L. EACH ACCIDENT:" in line:
-                    m_acc = re.search(r"E.L. EACH ACCIDENT:\s*\$([0-9,]+)", line)
-                    if m_acc:
-                        wc_acc = f"${m_acc.group(1)}"
-                        wc_acc_quote = line.strip()
-
+        if has_wc:
             raw_coverages.append(
                 RawCoverageSection(
                     coverage_type="workers_comp",
                     policy_number=wc_pol,
+                    effective_date=wc_eff,
+                    expiration_date=wc_exp,
                     per_accident=wc_acc,
-                    evidence=RawEvidenceQuote(page_number=1, source_text=wc_acc_quote, confidence=0.98) if wc_acc_quote else None,
+                    per_accident_evidence=RawEvidenceQuote(
+                        page_number=wc_acc_quote[0], source_text=wc_acc_quote[1], confidence=0.98
+                    ) if wc_acc_quote else None,
+                    effective_date_evidence=RawEvidenceQuote(
+                        page_number=wc_eff_quote[0], source_text=wc_eff_quote[1], confidence=0.98
+                    ) if wc_eff_quote else None,
+                    expiration_date_evidence=RawEvidenceQuote(
+                        page_number=wc_exp_quote[0], source_text=wc_exp_quote[1], confidence=0.98
+                    ) if wc_exp_quote else None,
+                    evidence=RawEvidenceQuote(
+                        page_number=wc_acc_quote[0], source_text=wc_acc_quote[1], confidence=0.98
+                    ) if wc_acc_quote else None,
                     confidence=0.98,
                 )
             )

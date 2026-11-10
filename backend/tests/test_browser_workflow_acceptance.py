@@ -28,13 +28,13 @@ import uvicorn
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 from app.main import app, repository
+from app.persistence.database import init_db
 from app.schemas.insurance import ComplianceStatus
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 SCREENSHOTS_DIR = BASE_DIR.parent / "evaluation" / "reports" / "browser_screenshots"
 FIXTURES_DIR = BASE_DIR / "evaluation" / "fixtures" / "pdfs"
-BASE_URL = "http://127.0.0.1:8000"
 
 
 class TestBrowserWorkflowAcceptance(unittest.TestCase):
@@ -42,6 +42,17 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
 
     server = None
     server_thread = None
+    base_url = ""
+    _temp_dir = None
+    _orig_env_db = None
+    _orig_env_up = None
+    _orig_repo_db = None
+
+    @classmethod
+    def _allocate_free_port(cls, host="127.0.0.1") -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, 0))
+            return int(s.getsockname()[1])
 
     @classmethod
     def _is_server_listening(cls, host="127.0.0.1", port=8000):
@@ -55,16 +66,34 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         if not Path(CHROME_PATH).exists():
             raise unittest.SkipTest(f"Google Chrome executable not found at {CHROME_PATH}")
 
-        # Ensure application server is listening
-        if not cls._is_server_listening():
-            config = uvicorn.Config(app=app, host="127.0.0.1", port=8000, log_level="error")
-            cls.server = uvicorn.Server(config=config)
-            cls.server_thread = threading.Thread(target=cls.server.run, daemon=True)
-            cls.server_thread.start()
-            for _ in range(50):
-                time.sleep(0.1)
-                if cls._is_server_listening():
-                    break
+        # Isolate SQLite DB, upload directory, and ephemeral server port per test run
+        cls._temp_dir = tempfile.TemporaryDirectory()
+        cls._orig_env_db = os.environ.get("SUBGUARD_DB_PATH")
+        cls._orig_env_up = os.environ.get("SUBGUARD_UPLOAD_DIR")
+        cls._orig_repo_db = repository.db_path
+
+        isolated_db = Path(cls._temp_dir.name) / "browser_acceptance.db"
+        isolated_uploads = Path(cls._temp_dir.name) / "uploads"
+        isolated_uploads.mkdir(parents=True, exist_ok=True)
+
+        os.environ["SUBGUARD_DB_PATH"] = str(isolated_db)
+        os.environ["SUBGUARD_UPLOAD_DIR"] = str(isolated_uploads)
+        init_db(isolated_db)
+        repository.db_path = isolated_db
+
+        # Always start an isolated local uvicorn server on a free ephemeral port
+        cls.port = cls._allocate_free_port()
+        cls.base_url = f"http://127.0.0.1:{cls.port}"
+        config = uvicorn.Config(app=app, host="127.0.0.1", port=cls.port, log_level="error")
+        cls.server = uvicorn.Server(config=config)
+        cls.server_thread = threading.Thread(target=cls.server.run, daemon=True)
+        cls.server_thread.start()
+        for _ in range(50):
+            time.sleep(0.1)
+            if cls._is_server_listening(port=cls.port):
+                break
+        if not cls._is_server_listening(port=cls.port):
+            raise RuntimeError(f"Failed to start isolated test server on port {cls.port}")
 
         cls.playwright = sync_playwright().start()
         cls.browser = cls.playwright.chromium.launch(
@@ -75,10 +104,25 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.browser.close()
-        cls.playwright.stop()
+        if getattr(cls, "browser", None):
+            cls.browser.close()
+        if getattr(cls, "playwright", None):
+            cls.playwright.stop()
         if cls.server:
             cls.server.should_exit = True
+        if cls.server_thread:
+            cls.server_thread.join(timeout=5)
+        repository.db_path = cls._orig_repo_db
+        if cls._orig_env_db is None:
+            os.environ.pop("SUBGUARD_DB_PATH", None)
+        else:
+            os.environ["SUBGUARD_DB_PATH"] = cls._orig_env_db
+        if cls._orig_env_up is None:
+            os.environ.pop("SUBGUARD_UPLOAD_DIR", None)
+        else:
+            os.environ["SUBGUARD_UPLOAD_DIR"] = cls._orig_env_up
+        if cls._temp_dir:
+            cls._temp_dir.cleanup()
 
     def setUp(self):
         self.console_logs: list[str] = []
@@ -103,7 +147,7 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         """1. Dashboard loads, renders metrics and navigation, and supports desktop/mobile layouts."""
         # Desktop layout
         self.page.set_viewport_size({"width": 1280, "height": 800})
-        self.page.goto(f"{BASE_URL}/dashboard", wait_until="networkidle")
+        self.page.goto(f"{self.base_url}/dashboard", wait_until="networkidle")
         self.assertIn("Dashboard", self.page.title())
 
         # Verify header, brand, and navigation
@@ -116,7 +160,7 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
 
         # Mobile layout
         self.page.set_viewport_size({"width": 375, "height": 667})
-        self.page.goto(f"{BASE_URL}/dashboard", wait_until="networkidle")
+        self.page.goto(f"{self.base_url}/dashboard", wait_until="networkidle")
         self.assertTrue(self.page.locator("text=Compliance Dashboard").is_visible())
         self.page.screenshot(path=str(SCREENSHOTS_DIR / "01_dashboard_mobile.png"))
 
@@ -126,7 +170,7 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
     def test_02_new_submission_validation_and_upload(self):
         """2. New submission form validates files client-side and uploads synthetic COI/endorsements."""
         self.page.set_viewport_size({"width": 1280, "height": 800})
-        self.page.goto(f"{BASE_URL}/submissions/new", wait_until="networkidle")
+        self.page.goto(f"{self.base_url}/submissions/new", wait_until="networkidle")
         self.assertIn("New Insurance Review", self.page.title())
 
         # Screenshot empty form
@@ -182,7 +226,7 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         coi_pdf = FIXTURES_DIR / "synthetic_standard_acord25.pdf"
         end_pdf = FIXTURES_DIR / "synthetic_blanket_endorsement.pdf"
 
-        self.page.goto(f"{BASE_URL}/submissions/new", wait_until="networkidle")
+        self.page.goto(f"{self.base_url}/submissions/new", wait_until="networkidle")
         sub_name = f"Results Evidence Test - {uuid4().hex[:6]}"
         self.page.fill("#submission_name", sub_name)
         self.page.fill("#evaluation_date", "2025-06-15")
@@ -253,7 +297,7 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         )
 
         # Navigate to Human Review form for this submission
-        self.page.goto(f"{BASE_URL}/submissions/{sub_id}/review", wait_until="networkidle")
+        self.page.goto(f"{self.base_url}/submissions/{sub_id}/review", wait_until="networkidle")
         self.assertTrue(self.page.locator("text=Human Review Decision").is_visible())
 
         # Test A: Attempted Approval of Deterministic Hard Failure
@@ -297,7 +341,7 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
 
     def test_05_submission_history_search_and_navigation(self):
         """5. Submission history supports live text search, status dropdown filtering, and link navigation."""
-        self.page.goto(f"{BASE_URL}/submissions", wait_until="networkidle")
+        self.page.goto(f"{self.base_url}/submissions", wait_until="networkidle")
         self.assertIn("Submission History", self.page.title())
 
         # Verify table exists
@@ -324,7 +368,7 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         self.assertTrue(len(recent) > 0, "No submissions found in DB")
         sub_id = recent[0]["id"]
 
-        self.page.goto(f"{BASE_URL}/submissions/{sub_id}", wait_until="networkidle")
+        self.page.goto(f"{self.base_url}/submissions/{sub_id}", wait_until="networkidle")
         self.assertTrue(self.page.locator(f"text={sub_id}").is_visible())
         self.assertTrue(self.page.locator("text=Uploaded Insurance Documents").is_visible())
 

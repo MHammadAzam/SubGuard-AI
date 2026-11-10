@@ -198,6 +198,10 @@ class ScenarioBenchmarkMockProvider(BaseExtractionProvider):
                     expiration_date=gl_exp,
                     each_occurrence=gl_occ,
                     general_aggregate=gl_agg,
+                    each_occurrence_evidence=RawEvidenceQuote(page_number=1, source_text=gl_occ_quote, confidence=occ_conf) if gl_occ_quote else None,
+                    general_aggregate_evidence=RawEvidenceQuote(page_number=1, source_text=gl_agg_quote, confidence=occ_conf) if gl_agg_quote else None,
+                    effective_date_evidence=RawEvidenceQuote(page_number=1, source_text=gl_dates_quote, confidence=occ_conf) if gl_dates_quote else None,
+                    expiration_date_evidence=RawEvidenceQuote(page_number=1, source_text=gl_dates_quote, confidence=occ_conf) if gl_dates_quote else None,
                     evidence=RawEvidenceQuote(page_number=1, source_text=gl_ev_quote, confidence=occ_conf) if gl_ev_quote else None,
                     confidence=occ_conf,
                 )
@@ -224,6 +228,7 @@ class ScenarioBenchmarkMockProvider(BaseExtractionProvider):
                     coverage_type="auto_liability",
                     policy_number=al_pol,
                     combined_single_limit=al_csl,
+                    combined_single_limit_evidence=RawEvidenceQuote(page_number=1, source_text=al_csl_quote, confidence=0.98) if al_csl_quote else None,
                     evidence=RawEvidenceQuote(page_number=1, source_text=al_csl_quote, confidence=0.98) if al_csl_quote else None,
                     confidence=0.98,
                 )
@@ -250,6 +255,7 @@ class ScenarioBenchmarkMockProvider(BaseExtractionProvider):
                     coverage_type="workers_comp",
                     policy_number=wc_pol,
                     per_accident=wc_acc,
+                    per_accident_evidence=RawEvidenceQuote(page_number=1, source_text=wc_acc_quote, confidence=0.98) if wc_acc_quote else None,
                     evidence=RawEvidenceQuote(page_number=1, source_text=wc_acc_quote, confidence=0.98) if wc_acc_quote else None,
                     confidence=0.98,
                 )

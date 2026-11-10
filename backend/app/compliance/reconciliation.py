@@ -15,15 +15,21 @@ and compliance evaluation:
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import date
 from typing import Dict, List, Optional, Set, Tuple
 
 from app.compliance.evaluator import _clean_entity_name, _split_core_and_suffix, compare_entity_names
 from app.schemas.insurance import (
+    CoverageExtraction,
     CoverageType,
     DocumentType,
+    EndorsementExtraction,
     EvidenceReference,
+    ExtractedDocumentSet,
+    InsuranceRequirement,
+    RequirementType,
     Severity,
 )
 from app.schemas.reconciliation import (
@@ -1038,18 +1044,192 @@ def _detect_date_convention(text: str) -> Optional[str]:
     return None
 
 
+_MONTH_NAME_MAP: Dict[str, int] = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sept": 9, "sep": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+_MONTH_ALT = (
+    r"January|Jan\.?|February|Feb\.?|March|Mar\.?|April|Apr\.?|May|June|Jun\.?|"
+    r"July|Jul\.?|August|Aug\.?|September|Sept\.?|Sep\.?|October|Oct\.?|November|Nov\.?|December|Dec\.?"
+)
+
+_DATE_CANDIDATE_REGEX = re.compile(
+    rf"\b(?P<iso_y>\d{{4}})[-/](?P<iso_m>\d{{1,2}})[-/](?P<iso_d>\d{{1,2}})\b"
+    rf"|\b(?P<ymd_y>\d{{4}})[\s/-]+(?P<ymd_m>{_MONTH_ALT})[\s/-]+(?P<ymd_d>\d{{1,2}})(?:st|nd|rd|th)?\b"
+    rf"|\b(?P<mdy_m>{_MONTH_ALT})\s+(?P<mdy_d>\d{{1,2}})(?:st|nd|rd|th)?,?\s+(?P<mdy_y>\d{{4}}|\d{{2}})\b"
+    rf"|\b(?P<dmy_d>\d{{1,2}})(?:st|nd|rd|th)?[\s/-]+(?P<dmy_m>{_MONTH_ALT})[\s/,-]+(?P<dmy_y>\d{{4}}|\d{{2}})\b"
+    rf"|\b(?P<num_1>\d{{1,2}})[/.-](?P<num_2>\d{{1,2}})[/.-](?P<num_y>\d{{4}}|\d{{2}})\b",
+    re.IGNORECASE,
+)
+
+_PRIOR_POLICY_CONTEXT_REGEX = re.compile(
+    r"\b(?:prior\s+policy|prior\s+term|previous\s+policy|previous\s+term)\b",
+    re.IGNORECASE,
+)
+_CURRENT_POLICY_OVERRIDE_REGEX = re.compile(
+    r"\b(?:current\s+policy|current\s+term|this\s+policy|this\s+endorsement|new\s+policy|policy\s+period)\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_date_candidate(m: re.Match[str], convention: Optional[str]) -> Optional[date]:
+    """Parse a matched date candidate using ISO, textual month, or established numeric convention."""
+    try:
+        if m.group("iso_y"):
+            return date(int(m.group("iso_y")), int(m.group("iso_m")), int(m.group("iso_d")))
+        if m.group("ymd_y"):
+            month_num = _MONTH_NAME_MAP[m.group("ymd_m").rstrip(".").lower()]
+            return date(int(m.group("ymd_y")), month_num, int(m.group("ymd_d")))
+        if m.group("mdy_m"):
+            y_str = m.group("mdy_y")
+            year_val = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
+            month_num = _MONTH_NAME_MAP[m.group("mdy_m").rstrip(".").lower()]
+            return date(year_val, month_num, int(m.group("mdy_d")))
+        if m.group("dmy_m"):
+            y_str = m.group("dmy_y")
+            year_val = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
+            month_num = _MONTH_NAME_MAP[m.group("dmy_m").rstrip(".").lower()]
+            return date(year_val, month_num, int(m.group("dmy_d")))
+        if m.group("num_y"):
+            y_str = m.group("num_y")
+            t1, t2 = int(m.group("num_1")), int(m.group("num_2"))
+            if convention == "MM/DD":
+                year_val = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
+                return date(year_val, t1, t2)
+            if convention == "DD/MM":
+                year_val = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
+                return date(year_val, t2, t1)
+            # Without explicit convention: reject 2-digit years; accept unambiguous 4-digit US MM/DD/YYYY
+            if len(y_str) != 4:
+                return None
+            return date(int(y_str), t1, t2)
+    except (ValueError, KeyError):
+        return None
+    return None
+
+
+def _find_explicit_dates_for_field(text: str, date_field: str) -> Set[date]:
+    """Extract all dates in text explicitly associated with date_field ('effective' or 'expiration').
+
+    Returns a set of distinct dates bound to date_field, excluding unrelated context
+    (e.g. invoices, billing, or prior policy sentences). A set of length > 1 indicates
+    conflicting dates for the same semantic field within the excerpt.
+    """
+    associated_dates: Set[date] = set()
+    convention = _detect_date_convention(text)
+
+    for m in _DATE_CANDIDATE_REGEX.finditer(text):
+        parsed = _parse_date_candidate(m, convention)
+        if parsed is None:
+            continue
+
+        m_start, m_end = m.start(), m.end()
+        prefix = text[max(0, m_start - 80):m_start]
+        suffix = text[m_end:min(len(text), m_end + 80)]
+
+        # Isolate the current clause/sentence so prior sentences do not bleed across boundaries
+        clause_prefix = re.split(r"(?<!\d)\.(?!\d)|[;\n]", prefix)[-1]
+
+        # 1. Unrelated context check
+        prior_matches = list(_PRIOR_POLICY_CONTEXT_REGEX.finditer(clause_prefix))
+        if prior_matches:
+            override_matches = list(_CURRENT_POLICY_OVERRIDE_REGEX.finditer(clause_prefix))
+            last_prior_pos = prior_matches[-1].start()
+            last_override_pos = override_matches[-1].start() if override_matches else -1
+            if last_prior_pos > last_override_pos:
+                continue
+
+        unrelated_match = None
+        for um in UNRELATED_DATE_CONTEXT_REGEX.finditer(clause_prefix):
+            unrelated_match = um
+        if unrelated_match:
+            eff_m = list(EFFECTIVE_LABEL_REGEX.finditer(clause_prefix))
+            exp_m = list(EXPIRATION_LABEL_REGEX.finditer(clause_prefix))
+            last_eff_pos = eff_m[-1].start() if eff_m else -1
+            last_exp_pos = exp_m[-1].start() if exp_m else -1
+            last_field_pos = max(last_eff_pos, last_exp_pos)
+            if unrelated_match.start() > last_field_pos:
+                continue
+
+        # 2. Date Range association ("Date_1 to/through/- Date_2")
+        is_start_of_range = bool(
+            re.match(
+                r"^\s*(?:to|through|until|\u2013|\u2014|-)\s*(?:\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",
+                suffix,
+                re.IGNORECASE,
+            )
+        )
+        is_end_of_range = bool(re.search(r"(?:to|through|until|\u2013|\u2014|-)\s*$", clause_prefix, re.IGNORECASE))
+
+        matched_field: Optional[str] = None
+        if is_start_of_range and not is_end_of_range:
+            matched_field = "effective"
+        elif is_end_of_range:
+            matched_field = "expiration"
+        else:
+            # 3. Explicit Label association
+            eff_matches = list(EFFECTIVE_LABEL_REGEX.finditer(clause_prefix))
+            exp_matches = list(EXPIRATION_LABEL_REGEX.finditer(clause_prefix))
+            last_eff_end = eff_matches[-1].end() if eff_matches else -1
+            last_exp_end = exp_matches[-1].end() if exp_matches else -1
+
+            if last_eff_end > last_exp_end and last_eff_end != -1:
+                matched_field = "effective"
+            elif last_exp_end > last_eff_end and last_exp_end != -1:
+                matched_field = "expiration"
+
+        if matched_field == date_field:
+            associated_dates.add(parsed)
+
+    return associated_dates
+
+
+def _evidence_has_conflicting_dates(
+    evidence_refs: Tuple[EvidenceReference, ...],
+    date_field: str,
+    doc_id: Optional[str] = None,
+) -> bool:
+    """Return True if evidence_refs contain multiple distinct dates for the same semantic field."""
+    all_dates: Set[date] = set()
+    for ref in evidence_refs:
+        if doc_id is not None and ref.document_id != doc_id:
+            continue
+        text = (ref.source_text or "").strip()
+        if not text:
+            continue
+        snippet_dates = _find_explicit_dates_for_field(text, date_field)
+        if len(snippet_dates) > 1:
+            return True
+        all_dates.update(snippet_dates)
+        if len(all_dates) > 1:
+            return True
+    return False
+
+
 def _evidence_supports_date(
     target_date: Optional[date],
     evidence_refs: Tuple[EvidenceReference, ...],
     date_field: str,  # "effective" or "expiration"
     doc_id: Optional[str] = None,
 ) -> bool:
-    """Verify that at least one evidence reference semantically supports target_date for date_field.
+    """Verify that evidence references semantically and unambiguously support target_date for date_field.
     
     Semantic validation rules:
     - Associate the extracted date with its semantic field or label.
     - Distinguish effective dates from expiration dates.
     - Reject dates that occur only in unrelated contexts (invoice, payment, prior policy, billed, quote).
+    - Reject excerpts containing multiple distinct dates associated with the same semantic field.
     - Ensure evidence references belong to expected document (doc_id).
     - If date cannot be confidently associated with its field, returns False (requires human review).
     - Disallows ambiguous numeric date transposition (cannot assume day-first without unambiguous text).
@@ -1060,34 +1240,7 @@ def _evidence_supports_date(
     if not evidence_refs:
         return False
 
-    year = target_date.year
-    yy = str(year)[2:]
-    month = target_date.month
-    day = target_date.day
-
-    month_names_full = [
-        "", "January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December"
-    ]
-    month_names_abbr = [
-        "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-    ]
-    full_m = month_names_full[month]
-    abbr_m = month_names_abbr[month]
-    m_group = rf"(?:{full_m}|{abbr_m}\.?|sept\.)"
-
-    # 1. Unambiguous ISO date patterns: YYYY-MM-DD or YYYY/MM/DD (4-digit year first)
-    iso_patterns = [
-        rf"\b{year}[-/]0?{month}[-/]0?{day}\b",
-    ]
-    # 2. Unambiguous textual month patterns (month written as name/abbreviation)
-    textual_patterns = [
-        rf"\b{m_group}\s+0?{day}(?:st|nd|rd|th)?,?\s+(?:{year}|{yy})\b",
-        rf"\b0?{day}(?:st|nd|rd|th)?[\s/-]+{m_group}[\s/,-]+(?:{year}|{yy})\b",
-        rf"\b{year}[\s/-]+{m_group}[\s/-]+0?{day}(?:st|nd|rd|th)?\b",
-    ]
-
+    all_matched_dates: Set[date] = set()
     for ref in evidence_refs:
         if doc_id is not None and ref.document_id != doc_id:
             continue
@@ -1095,83 +1248,15 @@ def _evidence_supports_date(
         if not text:
             continue
 
-        convention = _detect_date_convention(text)
-        numeric_patterns = []
+        snippet_dates = _find_explicit_dates_for_field(text, date_field)
+        # Multiple distinct dates bound to the same field within one snippet is conflicting/ambiguous
+        if len(snippet_dates) > 1:
+            return False
+        all_matched_dates.update(snippet_dates)
+        if len(all_matched_dates) > 1:
+            return False
 
-        if convention == "MM/DD":
-            # MM/DD convention established by document: accept 4-digit and 2-digit years
-            numeric_patterns.append(rf"\b0?{month}[/.-]0?{day}[/.-](?:{year}|{yy})\b")
-        elif convention == "DD/MM":
-            # DD/MM convention established by document
-            numeric_patterns.append(rf"\b0?{day}[/.-]0?{month}[/.-](?:{year}|{yy})\b")
-        else:
-            # When date convention is not explicitly established:
-            # - Two-digit year numeric dates (e.g. 01/02/25) are rejected as ambiguous
-            # - Standard 4-digit year dates in US MM/DD/YYYY format are accepted
-            # - Day-first transposition (DD/MM/YYYY) is NOT accepted without explicit DD/MM convention
-            numeric_patterns.append(rf"\b0?{month}[/.-]0?{day}[/.-]{year}\b")
-
-        active_patterns = iso_patterns + textual_patterns + numeric_patterns
-        if not active_patterns:
-            continue
-
-        date_regex = re.compile("|".join(f"(?:{p})" for p in active_patterns), re.IGNORECASE)
-
-        for m in date_regex.finditer(text):
-            m_start, m_end = m.start(), m.end()
-            prefix = text[max(0, m_start - 80):m_start]
-            suffix = text[m_end:min(len(text), m_end + 80)]
-
-            # 1. Unrelated context check
-            unrelated_match = None
-            for um in UNRELATED_DATE_CONTEXT_REGEX.finditer(prefix):
-                unrelated_match = um
-            if unrelated_match:
-                # Check if there is a closer policy/effective/expiration label
-                eff_m = list(EFFECTIVE_LABEL_REGEX.finditer(prefix))
-                exp_m = list(EXPIRATION_LABEL_REGEX.finditer(prefix))
-                last_eff_pos = eff_m[-1].start() if eff_m else -1
-                last_exp_pos = exp_m[-1].start() if exp_m else -1
-                last_field_pos = max(last_eff_pos, last_exp_pos)
-                if unrelated_match.start() > last_field_pos:
-                    # Unrelated label is closer to the date than any field label
-                    continue
-
-            # 2. Date Range association:
-            # Check if this date is part of "Date_1 to Date_2" or "Date_1 - Date_2"
-            is_start_of_range = bool(re.match(r"^\s*(?:to|through|until|\u2013|\u2014|-)\s*(?:[A-Za-z0-9/.-]+)", suffix, re.IGNORECASE))
-            is_end_of_range = bool(re.search(r"(?:to|through|until|\u2013|\u2014|-)\s*$", prefix, re.IGNORECASE))
-
-            if is_start_of_range:
-                # Start of range corresponds to effective date
-                if date_field == "effective":
-                    return True
-                else:
-                    # Not expiration date
-                    continue
-
-            if is_end_of_range:
-                # End of range corresponds to expiration date
-                if date_field == "expiration":
-                    return True
-                else:
-                    # Not effective date
-                    continue
-
-            # 3. Explicit Label association
-            eff_matches = list(EFFECTIVE_LABEL_REGEX.finditer(prefix))
-            exp_matches = list(EXPIRATION_LABEL_REGEX.finditer(prefix))
-            last_eff_end = eff_matches[-1].end() if eff_matches else -1
-            last_exp_end = exp_matches[-1].end() if exp_matches else -1
-
-            if date_field == "effective":
-                if last_eff_end > last_exp_end and last_eff_end != -1:
-                    return True
-            elif date_field == "expiration":
-                if last_exp_end > last_eff_end and last_exp_end != -1:
-                    return True
-
-    return False
+    return target_date in all_matched_dates
 
 
 def reconcile_dates(
@@ -1274,6 +1359,17 @@ def reconcile_dates(
     discrepancy_cat: Optional[DiscrepancyCategory] = None
     reason_code: Optional[str] = None
 
+    conflicting_date_evidence = (
+        (evaluating_policy and (
+            _evidence_has_conflicting_dates(policy_date_evidence, "effective", doc_id=policy_document_id)
+            or _evidence_has_conflicting_dates(policy_date_evidence, "expiration", doc_id=policy_document_id)
+        ))
+        or (evaluating_endorsement and (
+            _evidence_has_conflicting_dates(endorsement_date_evidence, "effective", doc_id=endorsement_document_id)
+            or _evidence_has_conflicting_dates(endorsement_date_evidence, "expiration", doc_id=endorsement_document_id)
+        ))
+    )
+
     if missing_eval_date:
         requires_review = True
         discrepancy_cat = DiscrepancyCategory.MISSING_EVIDENCE
@@ -1286,6 +1382,10 @@ def reconcile_dates(
         requires_review = True
         discrepancy_cat = DiscrepancyCategory.MISSING_EVIDENCE
         reason_code = "MISSING_ENDORSEMENT_DATES"
+    elif conflicting_date_evidence:
+        requires_review = True
+        discrepancy_cat = DiscrepancyCategory.DOCUMENT_DISCREPANCY
+        reason_code = "CONFLICTING_DATE_EVIDENCE"
     elif unsupported_dates:
         requires_review = True
         discrepancy_cat = DiscrepancyCategory.MISSING_EVIDENCE
@@ -1589,6 +1689,595 @@ class DeterministicReconciliationEngine:
         )
 
 
+def _evidence_has_date_content(refs: Tuple[EvidenceReference, ...]) -> bool:
+    """Return True if any evidence snippet contains recognizable date expressions."""
+    return any(_DATE_CANDIDATE_REGEX.search(ref.source_text or "") for ref in refs if ref.source_text)
+
+
+def reconcile_extracted_document_set(
+    document_set: ExtractedDocumentSet,
+    requirements: Optional[List[InsuranceRequirement]] = None,
+    evaluation_date: Optional[date] = None,
+    packet_id: Optional[str] = None,
+    document_hashes: Optional[Dict[str, str]] = None,
+) -> Optional[CrossDocumentReconciliationResult]:
+    """Execute deterministic cross-document reconciliation across an ExtractedDocumentSet.
+
+    Wires WP1, WP2, and WP3 reconciliation primitives into the production evaluation pipeline:
+    - Entity identity & contractual role reconciliation across packet documents
+    - Policy identifier reconciliation between COI coverages and endorsements
+    - Document relationship target-linkage classification for REPLACES/AMENDS wording
+    - Date & contractual-duration reconciliation where applicable inputs exist
+
+    Returns a validated CrossDocumentReconciliationResult via DeterministicReconciliationEngine,
+    or None if the document set contains no document evidence manifest entries.
+    """
+    reqs = requirements or []
+
+    # 1. Build deterministic packet manifest from all EvidenceReferences on document_set
+    all_refs: List[EvidenceReference] = []
+    if document_set.named_insured and document_set.named_insured.evidence:
+        all_refs.append(document_set.named_insured.evidence)
+    for sec_ni in document_set.additional_named_insureds:
+        if sec_ni.evidence:
+            all_refs.append(sec_ni.evidence)
+    if document_set.certificate_holder and document_set.certificate_holder.evidence:
+        all_refs.append(document_set.certificate_holder.evidence)
+    for cov in document_set.coverages:
+        all_refs.extend(cov.date_evidence)
+        if cov.evidence:
+            all_refs.append(cov.evidence)
+    for end in document_set.endorsements:
+        all_refs.extend(end.date_evidence)
+        if end.evidence:
+            all_refs.append(end.evidence)
+
+    if not all_refs:
+        return None
+
+    doc_types: Dict[str, DocumentType] = {}
+    doc_max_page: Dict[str, int] = {}
+    for ref in all_refs:
+        if ref.document_id not in doc_types:
+            doc_types[ref.document_id] = ref.document_type
+        doc_max_page[ref.document_id] = max(doc_max_page.get(ref.document_id, 1), ref.page_number)
+
+    doc_hash_map = document_hashes or {}
+    manifest_entries = tuple(
+        DocumentManifestEntry(
+            document_id=doc_id,
+            sha256_hash=doc_hash_map.get(doc_id) or hashlib.sha256(f"{doc_id}:{doc_types[doc_id].value}".encode("utf-8")).hexdigest(),
+            detected_document_type=doc_types[doc_id],
+            page_count=doc_max_page[doc_id],
+        )
+        for doc_id in doc_types
+    )
+    manifest_map = {m.document_id: m for m in manifest_entries}
+    primary_coi_id = next(
+        (m.document_id for m in manifest_entries if m.detected_document_type == DocumentType.COI),
+        None,
+    )
+
+    def _ev_compatible(ref: Optional[EvidenceReference]) -> bool:
+        return bool(
+            ref is not None
+            and ref.document_id in manifest_map
+            and ref.document_type == manifest_map[ref.document_id].detected_document_type
+        )
+
+    graph_edges: List[DocumentRelationshipEdge] = []
+    entity_records: List[EntityReconciliationRecord] = []
+    policy_records: List[PolicyReconciliationRecord] = []
+    date_records: List[DateReconciliationRecord] = []
+    discrepancies: List[DocumentDiscrepancy] = []
+    seen_disc_ids: Set[str] = set()
+
+    def _add_discrepancy(disc: DocumentDiscrepancy) -> None:
+        if disc.discrepancy_id not in seen_disc_ids:
+            seen_disc_ids.add(disc.discrepancy_id)
+            discrepancies.append(disc)
+
+    # 2. Cross-document Entity Identity & Role Reconciliation
+    ni_req = next((r for r in reqs if r.rule_type == RequirementType.NAMED_INSURED), None)
+    prim_ni = document_set.named_insured
+    if prim_ni and prim_ni.name and _ev_compatible(prim_ni.evidence):
+        assert prim_ni.evidence is not None
+        for idx, sec_ni in enumerate(document_set.additional_named_insureds):
+            if not _ev_compatible(sec_ni.evidence) or sec_ni.evidence is None:
+                continue
+            if sec_ni.evidence.document_id == prim_ni.evidence.document_id:
+                continue
+            erec = reconcile_entity_identities(
+                primary_entity_name=prim_ni.name,
+                primary_entity_role=EntityRole.NAMED_INSURED,
+                primary_document_id=prim_ni.evidence.document_id,
+                referenced_entity_name=sec_ni.name,
+                referenced_entity_role=EntityRole.NAMED_INSURED,
+                referenced_document_id=sec_ni.evidence.document_id,
+                applicable_contract_requirement_id=ni_req.requirement_id if ni_req else None,
+                evidence_chain=(prim_ni.evidence, sec_ni.evidence),
+                primary_role_evidence=prim_ni.evidence,
+                referenced_role_evidence=sec_ni.evidence,
+            )
+            entity_records.append(erec)
+
+            if erec.classification == EntityMatchClassification.CONFIRMED_MISMATCH:
+                req_id = ni_req.requirement_id if ni_req else None
+                cat = (
+                    DiscrepancyCategory.CONFIRMED_CONTRACTUAL_VIOLATION
+                    if req_id
+                    else DiscrepancyCategory.DOCUMENT_DISCREPANCY
+                )
+                _add_discrepancy(
+                    DocumentDiscrepancy(
+                        discrepancy_id=f"disc_entity_{idx}_{sec_ni.evidence.document_id}",
+                        category=cat,
+                        severity=Severity.CRITICAL,
+                        reason_code=erec.review_reason_code or "CONFIRMED_ENTITY_MISMATCH",
+                        description=(
+                            f"Cross-document entity identity mismatch: '{prim_ni.name}' ({prim_ni.evidence.document_id}) "
+                            f"conflicts with '{sec_ni.name}' ({sec_ni.evidence.document_id})."
+                        ),
+                        source_document_id=prim_ni.evidence.document_id,
+                        conflicting_document_id=sec_ni.evidence.document_id,
+                        applicable_requirement_id=req_id,
+                        applicable_entity_role=EntityRole.NAMED_INSURED,
+                        evidence_chain=(prim_ni.evidence, sec_ni.evidence),
+                        requires_human_review=True,
+                    )
+                )
+            elif erec.requires_human_review:
+                cat = (
+                    DiscrepancyCategory.DOCUMENT_DISCREPANCY
+                    if erec.classification == EntityMatchClassification.LEGAL_SUFFIX_DISCREPANCY
+                    else DiscrepancyCategory.AMBIGUOUS_RELATIONSHIP
+                )
+                _add_discrepancy(
+                    DocumentDiscrepancy(
+                        discrepancy_id=f"disc_entity_{idx}_{sec_ni.evidence.document_id}",
+                        category=cat,
+                        severity=Severity.MAJOR,
+                        reason_code=erec.review_reason_code or "AMBIGUOUS_ENTITY_IDENTITY",
+                        description=(
+                            f"Cross-document entity identity requires review: '{prim_ni.name}' "
+                            f"vs '{sec_ni.name}' ({erec.classification.value})."
+                        ),
+                        source_document_id=prim_ni.evidence.document_id,
+                        conflicting_document_id=sec_ni.evidence.document_id,
+                        applicable_requirement_id=ni_req.requirement_id if ni_req else None,
+                        applicable_entity_role=EntityRole.NAMED_INSURED,
+                        evidence_chain=(prim_ni.evidence, sec_ni.evidence),
+                        requires_human_review=True,
+                    )
+                )
+
+    # 3. Cross-document Policy Identifier Reconciliation
+    covs_with_pol = [
+        c for c in document_set.coverages
+        if c.policy_number and c.policy_number.strip() and _ev_compatible(c.evidence)
+    ]
+    for idx, end in enumerate(document_set.endorsements):
+        if not (end.applicable_policy and end.applicable_policy.strip() and _ev_compatible(end.evidence)):
+            continue
+        assert end.evidence is not None
+        end_doc_id = end.evidence.document_id
+        other_covs = [c for c in covs_with_pol if c.evidence and c.evidence.document_id != end_doc_id]
+        if not other_covs:
+            continue
+
+        norm_end_pol = normalize_policy_identifier(end.applicable_policy)
+        matched_cov = next(
+            (c for c in other_covs if normalize_policy_identifier(c.policy_number) == norm_end_pol),
+            None,
+        )
+        target_cov = matched_cov or next(
+            (c for c in other_covs if c.coverage_type == CoverageType.GENERAL_LIABILITY),
+            other_covs[0],
+        )
+        assert target_cov.evidence is not None
+        pol_rec = reconcile_policy_identifiers(
+            coi_document_id=target_cov.evidence.document_id,
+            coi_policy_number=target_cov.policy_number,
+            coi_evidence=target_cov.evidence,
+            endorsement_document_id=end_doc_id,
+            endorsement_policy_number=end.applicable_policy,
+            endorsement_evidence=end.evidence,
+            evidence_chain=(target_cov.evidence, end.evidence),
+        )
+        policy_records.append(pol_rec)
+        if pol_rec.requires_human_review:
+            _add_discrepancy(
+                DocumentDiscrepancy(
+                    discrepancy_id=f"disc_pol_{idx}_{end_doc_id}",
+                    category=DiscrepancyCategory.DOCUMENT_DISCREPANCY,
+                    severity=Severity.MAJOR,
+                    reason_code=pol_rec.review_reason_code or "CONFLICTING_POLICY_IDENTIFIERS",
+                    description=(
+                        f"Policy identifier mismatch between COI '{target_cov.policy_number}' and "
+                        f"endorsement applicable policy '{end.applicable_policy}'."
+                    ),
+                    source_document_id=target_cov.evidence.document_id,
+                    conflicting_document_id=end_doc_id,
+                    applicable_coverage_type=target_cov.coverage_type,
+                    evidence_chain=(target_cov.evidence, end.evidence),
+                    requires_human_review=True,
+                )
+            )
+
+    # 4. Document Relationship Target Linkage (REPLACES / AMENDS)
+    covs_with_ev = [c for c in document_set.coverages if _ev_compatible(c.evidence)]
+    for idx, end in enumerate(document_set.endorsements):
+        if not _ev_compatible(end.evidence) or end.evidence is None:
+            continue
+        end_doc_id = end.evidence.document_id
+        src_evs = [r for r in ([end.evidence] + list(end.date_evidence)) if _ev_compatible(r) and r.document_id == end_doc_id]
+        src_text = " ".join(r.source_text or "" for r in src_evs)
+
+        is_replaces = bool(REPLACES_EVIDENCE_PATTERN.search(src_text))
+        is_amends = bool(AMENDS_EVIDENCE_PATTERN.search(src_text))
+        if not (is_replaces or is_amends):
+            continue
+
+        rel_type = (
+            DocumentRelationshipType.REPLACES_DOCUMENT
+            if is_replaces
+            else DocumentRelationshipType.AMENDS_DOCUMENT
+        )
+        target_covs = [c for c in covs_with_ev if c.evidence and c.evidence.document_id != end_doc_id]
+        candidate_doc_ids = tuple(dict.fromkeys(c.evidence.document_id for c in target_covs if c.evidence))
+
+        if not candidate_doc_ids:
+            edge = classify_document_relationship(
+                edge_id=f"edge_{idx}_{end_doc_id}",
+                source_document_id=end_doc_id,
+                target_document_id=None,
+                relationship_type=rel_type,
+                classification=EdgeClassification.CONFIRMED_EXACT,
+                evidence_references=tuple(src_evs),
+                candidate_target_document_ids=(),
+            )
+        else:
+            primary_tgt = None
+            if end.applicable_policy and end.applicable_policy.strip():
+                norm_ap = normalize_policy_identifier(end.applicable_policy)
+                primary_tgt = next(
+                    (c for c in target_covs if c.policy_number and normalize_policy_identifier(c.policy_number) == norm_ap),
+                    None,
+                )
+            if primary_tgt is None:
+                primary_tgt = target_covs[0]
+            assert primary_tgt.evidence is not None
+            tgt_doc_id = primary_tgt.evidence.document_id
+            tgt_evs = [c.evidence for c in target_covs if c.evidence and c.evidence.document_id == tgt_doc_id]
+
+            edge = classify_document_relationship(
+                edge_id=f"edge_{idx}_{end_doc_id}",
+                source_document_id=end_doc_id,
+                target_document_id=tgt_doc_id,
+                relationship_type=rel_type,
+                classification=EdgeClassification.CONFIRMED_EXACT,
+                evidence_references=tuple(src_evs + tgt_evs),
+                associated_policy_id=primary_tgt.policy_number,
+                target_policy_number=primary_tgt.policy_number,
+                candidate_target_document_ids=candidate_doc_ids,
+            )
+
+        graph_edges.append(edge)
+        if edge.requires_human_review:
+            disc_cat = (
+                DiscrepancyCategory.DOCUMENT_DISCREPANCY
+                if edge.classification == EdgeClassification.CONFLICTING
+                else DiscrepancyCategory.AMBIGUOUS_RELATIONSHIP
+            )
+            _add_discrepancy(
+                DocumentDiscrepancy(
+                    discrepancy_id=f"disc_rel_{idx}_{end_doc_id}",
+                    category=disc_cat,
+                    severity=Severity.MAJOR,
+                    reason_code=edge.review_reason_code or "AMBIGUOUS_DOCUMENT_RELATIONSHIP",
+                    description=(
+                        f"Document relationship '{rel_type.value}' from '{end_doc_id}' could not be uniquely confirmed "
+                        f"({edge.review_reason_code or edge.classification.value})."
+                    ),
+                    source_document_id=end_doc_id,
+                    conflicting_document_id=edge.target_document_id,
+                    evidence_chain=edge.evidence_references,
+                    requires_human_review=True,
+                )
+            )
+
+    # 5. Temporal Date & Contractual Duration Reconciliation
+    reconciled_end_keys: Set[Tuple[Optional[str], Optional[str]]] = set()
+    reconciled_pol_docs: Set[str] = set()
+
+    def _get_compatible_cov_date_evidence(cov: CoverageExtraction) -> Tuple[Optional[str], Tuple[EvidenceReference, ...]]:
+        ev_list: List[EvidenceReference] = []
+        if cov.date_evidence:
+            ev_list = [r for r in cov.date_evidence if _ev_compatible(r)]
+        elif cov.evidence and _ev_compatible(cov.evidence) and _evidence_has_date_content((cov.evidence,)):
+            ev_list = [cov.evidence]
+        if not ev_list:
+            return None, ()
+        doc_id = ev_list[0].document_id
+        same_doc_ev = tuple(r for r in ev_list if r.document_id == doc_id)
+        return doc_id, same_doc_ev
+
+    # 5a. Duration requirements (endorsement or policy)
+    dur_reqs = [
+        r for r in reqs
+        if r.required_coverage_end_date is not None
+        or r.requires_coverage_through_policy_expiration
+        or r.rule_type == RequirementType.CONTRACTUAL_DURATION
+    ]
+    for r_idx, req in enumerate(dur_reqs):
+        # Resolve unambiguous coverage if applicable
+        cand_covs: List[CoverageExtraction] = []
+        if req.coverage_type is not None:
+            cand_covs = [c for c in document_set.coverages if c.coverage_type == req.coverage_type]
+        elif req.required_endorsement_type is not None:
+            matching_ends = [
+                e for e in document_set.endorsements
+                if e.endorsement_type == req.required_endorsement_type and not e.is_coi_checkbox_only
+            ]
+            end_pols = {e.applicable_policy.strip().upper() for e in matching_ends if e.applicable_policy and e.applicable_policy.strip()}
+            if len(end_pols) == 1:
+                tpol = next(iter(end_pols))
+                cand_covs = [c for c in document_set.coverages if c.policy_number and c.policy_number.strip().upper() == tpol]
+            elif not end_pols:
+                cand_covs = list(document_set.coverages)
+
+        sel_cov = cand_covs[0] if len(cand_covs) == 1 else None
+        pol_doc_id: Optional[str] = None
+        pol_eff: Optional[date] = None
+        pol_exp: Optional[date] = None
+        pol_ev: Tuple[EvidenceReference, ...] = ()
+        if sel_cov is not None:
+            pol_doc_id, pol_ev = _get_compatible_cov_date_evidence(sel_cov)
+            if pol_doc_id and pol_ev:
+                pol_eff = sel_cov.effective_date.date if sel_cov.effective_date else None
+                pol_exp = sel_cov.expiration_date.date if sel_cov.expiration_date else None
+                reconciled_pol_docs.add(pol_doc_id)
+
+        if req.required_endorsement_type is not None:
+            # Skip reconcile_dates when policy selection itself is ambiguous under coverage_type=None (handled by evaluator)
+            if req.requires_coverage_through_policy_expiration and len(cand_covs) != 1 and req.required_coverage_end_date is None:
+                continue
+
+            matching_ends = [
+                e for e in document_set.endorsements
+                if e.endorsement_type == req.required_endorsement_type and not e.is_coi_checkbox_only
+            ]
+            if matching_ends:
+                end = matching_ends[0]
+                raw_end_ev = [
+                    r for r in (list(end.date_evidence) + ([end.evidence] if end.evidence else []))
+                    if _ev_compatible(r) and r.document_type == end.document_type
+                ]
+                end_ev_docs = {r.document_id for r in raw_end_ev}
+                if len(end_ev_docs) > 1:
+                    continue
+                end_doc_id = next(iter(end_ev_docs)) if end_ev_docs else None
+                end_ev_tuple = tuple(raw_end_ev)
+                if end_doc_id is None:
+                    # Wrong-doc evidence or no evidence: handled by evaluator without violating manifest
+                    continue
+
+                eff_end_date = req.required_coverage_end_date
+                use_pol_span = req.requires_coverage_through_policy_expiration
+                if use_pol_span and pol_doc_id is None and sel_cov and sel_cov.expiration_date:
+                    eff_end_date = max(eff_end_date, sel_cov.expiration_date.date) if eff_end_date else sel_cov.expiration_date.date
+                    use_pol_span = False
+
+                try:
+                    drec = reconcile_dates(
+                        policy_document_id=pol_doc_id,
+                        policy_effective_date=pol_eff,
+                        policy_expiration_date=pol_exp,
+                        policy_date_evidence=pol_ev,
+                        endorsement_document_id=end_doc_id,
+                        endorsement_effective_date=end.effective_date,
+                        endorsement_expiration_date=end.expiration_date,
+                        endorsement_date_evidence=end_ev_tuple,
+                        evaluation_date=evaluation_date,
+                        evidence_chain=pol_ev + end_ev_tuple,
+                        contractual_duration_requirement_id=req.requirement_id,
+                        required_coverage_end_date=eff_end_date,
+                        requires_coverage_through_policy_expiration=use_pol_span,
+                        is_duration_requirement_validated=req.is_duration_requirement_validated,
+                    )
+                    date_records.append(drec)
+                    reconciled_end_keys.add((end_doc_id, req.requirement_id))
+                    if drec.requires_human_review and drec.review_reason_code:
+                        cat = drec.discrepancy_category or DiscrepancyCategory.DOCUMENT_DISCREPANCY
+                        sev = Severity.CRITICAL if cat == DiscrepancyCategory.CONFIRMED_CONTRACTUAL_VIOLATION else req.severity
+                        _add_discrepancy(
+                            DocumentDiscrepancy(
+                                discrepancy_id=f"disc_dur_{req.requirement_id}_{end_doc_id}",
+                                category=cat,
+                                severity=sev,
+                                reason_code=drec.review_reason_code,
+                                description=(
+                                    f"Duration date reconciliation for '{req.requirement_id}' requires review "
+                                    f"({drec.review_reason_code})."
+                                ),
+                                source_document_id=end_doc_id,
+                                conflicting_document_id=pol_doc_id if (pol_doc_id and pol_doc_id != end_doc_id) else None,
+                                applicable_requirement_id=req.requirement_id,
+                                applicable_coverage_type=req.coverage_type or (sel_cov.coverage_type if sel_cov else CoverageType.GENERAL_LIABILITY),
+                                evidence_chain=pol_ev + end_ev_tuple,
+                                requires_human_review=True,
+                            )
+                        )
+                except ValueError:
+                    pass
+            elif pol_doc_id is not None:
+                # Missing required endorsement while COI policy dates exist
+                try:
+                    drec = reconcile_dates(
+                        policy_document_id=pol_doc_id,
+                        policy_effective_date=pol_eff,
+                        policy_expiration_date=pol_exp,
+                        policy_date_evidence=pol_ev,
+                        endorsement_document_id=None,
+                        endorsement_effective_date=None,
+                        endorsement_expiration_date=None,
+                        endorsement_date_evidence=(),
+                        evaluation_date=evaluation_date,
+                        evidence_chain=pol_ev,
+                        contractual_duration_requirement_id=req.requirement_id,
+                        required_coverage_end_date=req.required_coverage_end_date,
+                        requires_coverage_through_policy_expiration=req.requires_coverage_through_policy_expiration,
+                        is_duration_requirement_validated=req.is_duration_requirement_validated,
+                    )
+                    date_records.append(drec)
+                    if drec.requires_human_review and drec.review_reason_code:
+                        _add_discrepancy(
+                            DocumentDiscrepancy(
+                                discrepancy_id=f"disc_dur_missing_{req.requirement_id}_{pol_doc_id}",
+                                category=drec.discrepancy_category or DiscrepancyCategory.MISSING_EVIDENCE,
+                                severity=req.severity,
+                                reason_code=drec.review_reason_code,
+                                description=(
+                                    f"Required endorsement document missing for duration requirement '{req.requirement_id}'."
+                                ),
+                                source_document_id=pol_doc_id,
+                                applicable_requirement_id=req.requirement_id,
+                                applicable_coverage_type=req.coverage_type or (sel_cov.coverage_type if sel_cov else CoverageType.GENERAL_LIABILITY),
+                                evidence_chain=pol_ev,
+                                requires_human_review=True,
+                            )
+                        )
+                except ValueError:
+                    pass
+
+    # 5b. Policy date-evidence validation when POLICY_EXPIRATION / POLICY_EFFECTIVE_DATE has date-bearing evidence
+    date_reqs = [
+        r for r in reqs
+        if r.rule_type in (RequirementType.POLICY_EXPIRATION, RequirementType.POLICY_EFFECTIVE_DATE, RequirementType.CONTRACTUAL_DURATION)
+        and r.coverage_type is not None
+        and r.required_endorsement_type is None
+    ]
+    for req in date_reqs:
+        cov = next((c for c in document_set.coverages if c.coverage_type == req.coverage_type), None)
+        if cov is None:
+            continue
+        pol_doc_id, pol_ev = _get_compatible_cov_date_evidence(cov)
+        if not pol_doc_id or pol_doc_id in reconciled_pol_docs:
+            continue
+        pol_eff = cov.effective_date.date if cov.effective_date else None
+        pol_exp = cov.expiration_date.date if cov.expiration_date else None
+        try:
+            drec = reconcile_dates(
+                policy_document_id=pol_doc_id,
+                policy_effective_date=pol_eff,
+                policy_expiration_date=pol_exp,
+                policy_date_evidence=pol_ev,
+                endorsement_document_id=None,
+                endorsement_effective_date=None,
+                endorsement_expiration_date=None,
+                endorsement_date_evidence=(),
+                evaluation_date=evaluation_date,
+                evidence_chain=pol_ev,
+                contractual_duration_requirement_id=None,
+            )
+            date_records.append(drec)
+            reconciled_pol_docs.add(pol_doc_id)
+            if drec.requires_human_review and drec.review_reason_code:
+                cat = drec.discrepancy_category or DiscrepancyCategory.DOCUMENT_DISCREPANCY
+                if cat == DiscrepancyCategory.CONFIRMED_CONTRACTUAL_VIOLATION:
+                    cat = DiscrepancyCategory.DOCUMENT_DISCREPANCY
+                _add_discrepancy(
+                    DocumentDiscrepancy(
+                        discrepancy_id=f"disc_poldate_{req.requirement_id}_{pol_doc_id}",
+                        category=cat,
+                        severity=req.severity,
+                        reason_code=drec.review_reason_code,
+                        description=(
+                            f"Policy date reconciliation on '{pol_doc_id}' requires review "
+                            f"({drec.review_reason_code})."
+                        ),
+                        source_document_id=pol_doc_id,
+                        applicable_requirement_id=req.requirement_id,
+                        applicable_coverage_type=cov.coverage_type,
+                        evidence_chain=pol_ev,
+                        requires_human_review=True,
+                    )
+                )
+        except ValueError:
+            pass
+
+    # 5c. Standalone endorsement dates (when endorsement carries dates outside duration requirements)
+    for end in document_set.endorsements:
+        if end.is_coi_checkbox_only or (end.effective_date is None and end.expiration_date is None):
+            continue
+        raw_end_ev = [
+            r for r in (list(end.date_evidence) + ([end.evidence] if end.evidence else []))
+            if _ev_compatible(r) and r.document_type == end.document_type
+        ]
+        end_ev_docs = {r.document_id for r in raw_end_ev}
+        if len(end_ev_docs) != 1:
+            continue
+        end_doc_id = next(iter(end_ev_docs))
+        if any(k[0] == end_doc_id for k in reconciled_end_keys):
+            continue
+        end_ev_tuple = tuple(raw_end_ev)
+        try:
+            drec = reconcile_dates(
+                policy_document_id=None,
+                policy_effective_date=None,
+                policy_expiration_date=None,
+                policy_date_evidence=(),
+                endorsement_document_id=end_doc_id,
+                endorsement_effective_date=end.effective_date,
+                endorsement_expiration_date=end.expiration_date,
+                endorsement_date_evidence=end_ev_tuple,
+                evaluation_date=evaluation_date,
+                evidence_chain=end_ev_tuple,
+                contractual_duration_requirement_id=None,
+            )
+            date_records.append(drec)
+            reconciled_end_keys.add((end_doc_id, None))
+            if drec.requires_human_review and drec.review_reason_code:
+                cat = drec.discrepancy_category or DiscrepancyCategory.DOCUMENT_DISCREPANCY
+                if cat == DiscrepancyCategory.CONFIRMED_CONTRACTUAL_VIOLATION:
+                    cat = DiscrepancyCategory.DOCUMENT_DISCREPANCY
+                _add_discrepancy(
+                    DocumentDiscrepancy(
+                        discrepancy_id=f"disc_enddate_{end_doc_id}",
+                        category=cat,
+                        severity=Severity.MAJOR,
+                        reason_code=drec.review_reason_code,
+                        description=(
+                            f"Endorsement date reconciliation on '{end_doc_id}' requires review "
+                            f"({drec.review_reason_code})."
+                        ),
+                        source_document_id=end_doc_id,
+                        applicable_coverage_type=CoverageType.GENERAL_LIABILITY,
+                        evidence_chain=end_ev_tuple,
+                        requires_human_review=True,
+                    )
+                )
+        except ValueError:
+            pass
+
+    if not (graph_edges or entity_records or policy_records or date_records or discrepancies):
+        return None
+
+    engine = DeterministicReconciliationEngine()
+    pkt_id = packet_id or f"pkt_{document_set.subcontractor_id}"
+    return engine.reconcile_packet(
+        document_packet_id=pkt_id,
+        packet_manifest=manifest_entries,
+        primary_coi_id=primary_coi_id,
+        graph_edges=tuple(graph_edges),
+        entity_records=tuple(entity_records),
+        policy_records=tuple(policy_records),
+        date_records=tuple(date_records),
+        missing_evidence_records=(),
+        discrepancies=tuple(discrepancies),
+    )
+
+
 __all__ = [
     "reconcile_policy_identifiers",
     "reconcile_entity_identities",
@@ -1596,4 +2285,5 @@ __all__ = [
     "reconcile_dates",
     "classify_document_relationship",
     "DeterministicReconciliationEngine",
+    "reconcile_extracted_document_set",
 ]

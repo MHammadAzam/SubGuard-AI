@@ -47,6 +47,9 @@ def sample_gl_coverage(
     confidence: float = 0.95,
     status: ExtractionStatus = ExtractionStatus.EXTRACTED,
 ) -> CoverageExtraction:
+    eff_str = eff.strftime("%m/%d/%Y")
+    exp_str = exp.strftime("%m/%d/%Y")
+    date_quote = f"POLICY EFF: {eff_str}   POLICY EXP: {exp_str}"
     return CoverageExtraction(
         coverage_type=CoverageType.GENERAL_LIABILITY,
         policy_number="GL-987654-01",
@@ -55,21 +58,25 @@ def sample_gl_coverage(
             amount_cents=occ_cents,
             raw_text=f"${occ_cents/100:,.0f}",
             confidence=confidence,
+            evidence=make_evidence(text=f"EACH OCCURRENCE: ${occ_cents/100:,.0f}"),
         ),
         general_aggregate=MoneyValue(
             amount_cents=agg_cents,
             raw_text=f"${agg_cents/100:,.0f}",
             confidence=confidence,
+            evidence=make_evidence(text=f"GENERAL AGGREGATE: ${agg_cents/100:,.0f}"),
         ),
         effective_date=DateValue(
             date=eff,
-            raw_text=eff.strftime("%m/%d/%Y"),
+            raw_text=eff_str,
             confidence=confidence,
+            evidence=make_evidence(text=date_quote),
         ),
         expiration_date=DateValue(
             date=exp,
-            raw_text=exp.strftime("%m/%d/%Y"),
+            raw_text=exp_str,
             confidence=confidence,
+            evidence=make_evidence(text=date_quote),
         ),
         evidence=make_evidence(text=f"GL EACH OCCURRENCE ${occ_cents/100:,.0f}"),
         extraction_status=status,

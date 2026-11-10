@@ -11,6 +11,7 @@ Coordinates:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ from uuid import uuid4
 from fastapi import UploadFile
 
 from app.compliance.evaluator import ComplianceEvaluator
+from app.compliance.reconciliation import reconcile_extracted_document_set
 from app.documents.processor import MAX_PDF_SIZE_BYTES, PDFProcessingError, PDFProcessor
 from app.extraction.ocr import BaseOCRProvider, TesseractOCRProvider
 from app.extraction.pipeline import ExtractionPipelineService, reconcile_cross_document_set
@@ -45,6 +47,7 @@ from app.schemas.insurance import (
     LimitField,
     RequirementType,
     Severity,
+    validate_requirement_profile,
 )
 from app.schemas.pdf import DocumentProcessingStatus, PDFDocumentInspection
 
@@ -216,7 +219,16 @@ class DocumentReviewService:
         upload_dir = get_upload_dir() / sub_id
         upload_dir.mkdir(parents=True, exist_ok=True)
 
-        reqs = requirements or get_default_requirements()
+        if requirements is None:
+            reqs = validate_requirement_profile(
+                get_default_requirements(),
+                enforce_effective_date_baseline=True,
+            )
+        else:
+            reqs = validate_requirement_profile(
+                requirements,
+                enforce_effective_date_baseline=False,
+            )
 
         # Select provider: honest mock is default for local application safety
         if provider_name in ("mock", "honest_mock", "application_mock"):
@@ -238,6 +250,7 @@ class DocumentReviewService:
         )
 
         doc_records: List[Dict[str, Any]] = []
+        doc_hashes: Dict[str, str] = {}
         doc_sets: List[ExtractedDocumentSet] = []
         pipeline_errors: List[str] = []
         inspections: List[PDFDocumentInspection] = []
@@ -248,6 +261,7 @@ class DocumentReviewService:
             coi_bytes, coi_path, coi_orig_name = await self.save_uploaded_file(
                 coi_file, upload_dir, coi_doc_id
             )
+            doc_hashes[coi_doc_id] = hashlib.sha256(coi_bytes).hexdigest()
 
             coi_inspection = self.pdf_processor.process_pdf(
                 coi_bytes, document_id=coi_doc_id
@@ -307,6 +321,7 @@ class DocumentReviewService:
                 end_bytes, end_path, end_orig_name = await self.save_uploaded_file(
                     end_file, upload_dir, end_doc_id
                 )
+                doc_hashes[end_doc_id] = hashlib.sha256(end_bytes).hexdigest()
 
                 end_inspection = self.pdf_processor.process_pdf(
                     end_bytes, document_id=end_doc_id
@@ -362,12 +377,18 @@ class DocumentReviewService:
             combined_coverages = []
             combined_endorsements = []
             named_insured_info = None
+            additional_named_insureds = []
             cert_holder_info = None
             contradictions = []
 
             for ds in doc_sets:
-                if ds.named_insured and (not named_insured_info or not named_insured_info.name):
-                    named_insured_info = ds.named_insured
+                if ds.named_insured and (ds.named_insured.name or ds.named_insured.evidence):
+                    if not named_insured_info or not named_insured_info.name:
+                        named_insured_info = ds.named_insured
+                    else:
+                        additional_named_insureds.append(ds.named_insured)
+                if ds.additional_named_insureds:
+                    additional_named_insureds.extend(ds.additional_named_insureds)
                 if ds.certificate_holder and (not cert_holder_info or not cert_holder_info.name):
                     cert_holder_info = ds.certificate_holder
                 combined_coverages.extend(ds.coverages)
@@ -382,16 +403,24 @@ class DocumentReviewService:
                 documents_submitted=[i.classified_type for i in inspections],
                 is_document_set_complete=len(pipeline_errors) == 0,
                 named_insured=named_insured_info,
+                additional_named_insureds=additional_named_insureds,
                 certificate_holder=cert_holder_info,
                 coverages=combined_coverages,
                 endorsements=combined_endorsements,
                 raw_contradictions_detected=list(set(contradictions)),
             )
 
-            # Reconcile cross-document contradictions
+            # Reconcile cross-document contradictions and structured reconciliation checks once
             reconcile_cross_document_set(composite_set)
+            composite_set.reconciliation_result = reconcile_extracted_document_set(
+                document_set=composite_set,
+                requirements=reqs,
+                evaluation_date=eval_date,
+                packet_id=sub_id,
+                document_hashes=doc_hashes,
+            )
 
-            # Run deterministic evaluation
+            # Run deterministic evaluation (reuses attached reconciliation_result without duplicating)
             review_result = self.evaluator.evaluate(
                 document_set=composite_set,
                 requirements=reqs,

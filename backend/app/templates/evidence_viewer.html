@@ -125,57 +125,164 @@
                 </tr>
                 {% endif %}
 
-                <!-- Coverages -->
+                <!-- Coverages (field-level citations) -->
                 {% for cov in doc_set.coverages %}
-                <tr>
-                    <td><strong>Coverage</strong></td>
-                    <td>{{ cov.coverage_type.replace('_', ' ').title() }}</td>
-                    <td>
-                        <div>Policy: <strong>{{ cov.policy_number or 'N/A' }}</strong></div>
-                        {% if cov.each_occurrence %}
-                        <div>Occ: <strong>${{ (cov.each_occurrence.amount_cents / 100)|round|int }}</strong></div>
+                    {% set cov_label = cov.coverage_type.replace('_', ' ').title() %}
+                    {% set pol_suffix = ' (' ~ cov.policy_number ~ ')' if cov.policy_number else '' %}
+                    {% set money_fields = [
+                        ('Each Occurrence', cov.each_occurrence),
+                        ('General Aggregate', cov.general_aggregate),
+                        ('Products / Comp Ops', cov.products_completed_ops),
+                        ('Personal & Adv Injury', cov.personal_adv_injury),
+                        ('Combined Single Limit', cov.combined_single_limit),
+                        ('Per Accident', cov.per_accident),
+                        ('Disease Each Employee', cov.disease_each_employee),
+                        ('Disease Policy Limit', cov.disease_policy_limit),
+                    ] %}
+                    {% set date_fields = [
+                        ('Effective Date', cov.effective_date),
+                        ('Expiration Date', cov.expiration_date),
+                    ] %}
+                    {% set ns = namespace(rendered=false) %}
+
+                    {% for field_title, mv in money_fields %}
+                        {% if mv %}
+                        {% set ns.rendered = true %}
+                        {% set f_ev = mv.evidence %}
+                        <tr>
+                            <td><strong>{{ cov_label }}</strong></td>
+                            <td>{{ field_title }}{{ pol_suffix }}</td>
+                            <td><strong>${{ (mv.amount_cents / 100)|round|int }}</strong></td>
+                            <td>
+                                {% if f_ev %}
+                                Page {{ f_ev.page_number }}
+                                {% if f_ev.processing_status == 'ocr_extracted' %}
+                                <span class="badge-ocr" style="display: block; margin-top: 4px; font-size: 11px; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; font-weight: 500;">
+                                    OCR ({{ f_ev.ocr_provider or 'tesseract' }})
+                                </span>
+                                {% endif %}
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if f_ev %}
+                                <div class="evidence-quote"
+                                    {% if f_ev.bounding_box %}
+                                    data-bbox-x="{{ f_ev.bounding_box.x }}"
+                                    data-bbox-y="{{ f_ev.bounding_box.y }}"
+                                    data-bbox-w="{{ f_ev.bounding_box.width }}"
+                                    data-bbox-h="{{ f_ev.bounding_box.height }}"
+                                    {% endif %}>
+                                    &ldquo;{{ f_ev.source_text }}&rdquo;
+                                </div>
+                                {% if f_ev.bounding_box %}
+                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
+                                    BBox: [{{ (f_ev.bounding_box.x * 100)|round(1) }}%, {{ (f_ev.bounding_box.y * 100)|round(1) }}%, {{ (f_ev.bounding_box.width * 100)|round(1) }}%, {{ (f_ev.bounding_box.height * 100)|round(1) }}%]
+                                </div>
+                                {% endif %}
+                                {% else %}
+                                <span style="color: #64748b; font-style: italic;">No field-specific citation</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if f_ev %}
+                                <span style="color: #15803d; font-weight: 600;">✓ Grounded</span>
+                                {% else %}
+                                <span style="color: #b45309; font-weight: 600;">Unverified citation</span>
+                                {% endif %}
+                            </td>
+                        </tr>
                         {% endif %}
-                        {% if cov.general_aggregate %}
-                        <div>Agg: <strong>${{ (cov.general_aggregate.amount_cents / 100)|round|int }}</strong></div>
+                    {% endfor %}
+
+                    {% for field_title, dv in date_fields %}
+                        {% if dv %}
+                        {% set ns.rendered = true %}
+                        {% set d_ev = dv.evidence or (cov.date_evidence[0] if cov.date_evidence else none) %}
+                        <tr>
+                            <td><strong>{{ cov_label }}</strong></td>
+                            <td>{{ field_title }}{{ pol_suffix }}</td>
+                            <td><strong>{{ dv.date }}</strong></td>
+                            <td>
+                                {% if d_ev %}
+                                Page {{ d_ev.page_number }}
+                                {% if d_ev.processing_status == 'ocr_extracted' %}
+                                <span class="badge-ocr" style="display: block; margin-top: 4px; font-size: 11px; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; font-weight: 500;">
+                                    OCR ({{ d_ev.ocr_provider or 'tesseract' }})
+                                </span>
+                                {% endif %}
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if d_ev %}
+                                <div class="evidence-quote"
+                                    {% if d_ev.bounding_box %}
+                                    data-bbox-x="{{ d_ev.bounding_box.x }}"
+                                    data-bbox-y="{{ d_ev.bounding_box.y }}"
+                                    data-bbox-w="{{ d_ev.bounding_box.width }}"
+                                    data-bbox-h="{{ d_ev.bounding_box.height }}"
+                                    {% endif %}>
+                                    &ldquo;{{ d_ev.source_text }}&rdquo;
+                                </div>
+                                {% if d_ev.bounding_box %}
+                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
+                                    BBox: [{{ (d_ev.bounding_box.x * 100)|round(1) }}%, {{ (d_ev.bounding_box.y * 100)|round(1) }}%, {{ (d_ev.bounding_box.width * 100)|round(1) }}%, {{ (d_ev.bounding_box.height * 100)|round(1) }}%]
+                                </div>
+                                {% endif %}
+                                {% else %}
+                                <span style="color: #64748b; font-style: italic;">No field-specific citation</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if d_ev %}
+                                <span style="color: #15803d; font-weight: 600;">✓ Grounded</span>
+                                {% else %}
+                                <span style="color: #b45309; font-weight: 600;">Unverified citation</span>
+                                {% endif %}
+                            </td>
+                        </tr>
                         {% endif %}
-                        {% if cov.effective_date %}
-                        <div>Term: {{ cov.effective_date.date }} &rarr; {{ cov.expiration_date.date if cov.expiration_date else 'N/A' }}</div>
-                        {% endif %}
-                    </td>
-                    <td>
-                        Page {{ cov.evidence.page_number if cov.evidence else 1 }}
-                        {% if cov.evidence and cov.evidence.processing_status == 'ocr_extracted' %}
-                        <span class="badge-ocr" style="display: block; margin-top: 4px; font-size: 11px; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; font-weight: 500;">
-                            OCR ({{ cov.evidence.ocr_provider or 'tesseract' }})
-                        </span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if cov.evidence %}
-                        <div class="evidence-quote"
+                    {% endfor %}
+
+                    {% if cov.evidence or not ns.rendered %}
+                    <tr>
+                        <td><strong>Coverage</strong></td>
+                        <td>{{ cov_label }}{% if ns.rendered %} (Policy / Section){% endif %}</td>
+                        <td>Policy: <strong>{{ cov.policy_number or 'N/A' }}</strong></td>
+                        <td>
+                            Page {{ cov.evidence.page_number if cov.evidence else 1 }}
+                            {% if cov.evidence and cov.evidence.processing_status == 'ocr_extracted' %}
+                            <span class="badge-ocr" style="display: block; margin-top: 4px; font-size: 11px; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; font-weight: 500;">
+                                OCR ({{ cov.evidence.ocr_provider or 'tesseract' }})
+                            </span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if cov.evidence %}
+                            <div class="evidence-quote"
+                                {% if cov.evidence.bounding_box %}
+                                data-bbox-x="{{ cov.evidence.bounding_box.x }}"
+                                data-bbox-y="{{ cov.evidence.bounding_box.y }}"
+                                data-bbox-w="{{ cov.evidence.bounding_box.width }}"
+                                data-bbox-h="{{ cov.evidence.bounding_box.height }}"
+                                {% endif %}>
+                                &ldquo;{{ cov.evidence.source_text }}&rdquo;
+                            </div>
                             {% if cov.evidence.bounding_box %}
-                            data-bbox-x="{{ cov.evidence.bounding_box.x }}"
-                            data-bbox-y="{{ cov.evidence.bounding_box.y }}"
-                            data-bbox-w="{{ cov.evidence.bounding_box.width }}"
-                            data-bbox-h="{{ cov.evidence.bounding_box.height }}"
-                            {% endif %}>
-                            &ldquo;{{ cov.evidence.source_text }}&rdquo;
-                        </div>
-                        {% if cov.evidence.bounding_box %}
-                        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
-                            BBox: [{{ (cov.evidence.bounding_box.x * 100)|round(1) }}%, {{ (cov.evidence.bounding_box.y * 100)|round(1) }}%, {{ (cov.evidence.bounding_box.width * 100)|round(1) }}%, {{ (cov.evidence.bounding_box.height * 100)|round(1) }}%]
-                        </div>
-                        {% endif %}
-                        {% else %}
-                        <span style="color: #64748b; font-style: italic;">No quote citation attached</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        <span style="color: #15803d; font-weight: 600;">
-                            ✓ {{ cov.extraction_status.replace('_', ' ') }}
-                        </span>
-                    </td>
-                </tr>
+                            <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
+                                BBox: [{{ (cov.evidence.bounding_box.x * 100)|round(1) }}%, {{ (cov.evidence.bounding_box.y * 100)|round(1) }}%, {{ (cov.evidence.bounding_box.width * 100)|round(1) }}%, {{ (cov.evidence.bounding_box.height * 100)|round(1) }}%]
+                            </div>
+                            {% endif %}
+                            {% else %}
+                            <span style="color: #64748b; font-style: italic;">No quote citation attached</span>
+                            {% endif %}
+                        </td>
+                        <td><span style="color: #15803d; font-weight: 600;">✓ {{ cov.extraction_status.replace('_', ' ') }}</span></td>
+                    </tr>
+                    {% endif %}
                 {% endfor %}
 
                 <!-- Endorsements -->

@@ -791,6 +791,22 @@ class TestOpenRouterExtractionProvider(unittest.TestCase):
                     "expiration_date": "01/01/2026",
                     "each_occurrence": "$1,000,000",
                     "general_aggregate": "$2,000,000",
+                    "each_occurrence_evidence": {
+                        "page_number": 1,
+                        "source_text": "EACH OCCURRENCE: $1,000,000",
+                    },
+                    "general_aggregate_evidence": {
+                        "page_number": 1,
+                        "source_text": "GENERAL AGGREGATE: $2,000,000",
+                    },
+                    "effective_date_evidence": {
+                        "page_number": 1,
+                        "source_text": "POLICY EFF: 01/01/2025",
+                    },
+                    "expiration_date_evidence": {
+                        "page_number": 1,
+                        "source_text": "POLICY EXP: 01/01/2026",
+                    },
                     "evidence": {
                         "page_number": 1,
                         "source_text": "POLICY NUMBER: GL-98765432",

@@ -10,12 +10,16 @@ Provides:
 from __future__ import annotations
 
 import json
+import re
+import secrets
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import (
+    Depends,
     FastAPI,
     File,
     Form,
@@ -24,14 +28,15 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from app.compliance.evaluator import ComplianceEvaluator
-from app.documents.review_service import DocumentReviewService, get_default_requirements
-from app.persistence.database import init_db
+from app.documents.review_service import DocumentReviewService, get_default_requirements, get_upload_dir
+from app.persistence.database import get_connection, init_db
 from app.persistence.repository import SubmissionRepository
 from app.schemas.insurance import (
     ComplianceFinding,
@@ -41,31 +46,144 @@ from app.schemas.insurance import (
     InsuranceRequirement,
     RequirementType,
     Severity,
+    validate_requirement_profile,
+)
+from app.security.audit_log import log_security_event
+from app.security.bootstrap import bootstrap_admin_from_env
+from app.security.config import (
+    PRE_LOGIN_CSRF_COOKIE_NAME,
+    SESSION_COOKIE_NAME,
+    get_cors_origins,
+    get_login_rate_limits,
+    is_cookie_secure,
+    is_demo_endpoint_enabled,
+    is_https_enforced,
+    is_production_env,
+    resolve_effective_scheme,
+    validate_production_config,
+)
+from app.security.rate_limit import login_rate_limiter
+from app.security.rbac import (
+    BrowserAuthRedirectRequired,
+    create_auth_dependencies,
+    get_client_ip,
+    login_redirect_location,
+    sanitize_next_url,
+)
+from app.security.service import (
+    AuthService,
+    AuthenticatedPrincipal,
+    generate_login_csrf_token,
+    verify_login_csrf_token,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 
+# Initialize SQLite database schema before global services and validate config
+init_db()
+repository = SubmissionRepository()
+evaluator = ComplianceEvaluator()
+review_service = DocumentReviewService(repository=repository)
+auth_service = AuthService(db_path_provider=lambda: repository.db_path)
+_auth_deps = create_auth_dependencies(auth_service)
+resolve_optional_principal = _auth_deps["resolve_optional_principal"]
+require_api_roles = _auth_deps["require_api_roles"]
+require_ui_roles = _auth_deps["require_ui_roles"]
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Ensure DB tables exist, apply explicit admin bootstrap if set, and fail closed in prod."""
+    init_db(repository.db_path)
+    bootstrap_admin_from_env(repository.db_path)
+    validate_production_config(repository.db_path)
+    yield
+
+
 app = FastAPI(
     title="SubGuard AI - Compliance Engine API",
     version="0.2.0",
     description="Deterministic evaluation service and web interface for insurance compliance documents.",
+    lifespan=lifespan,
 )
 
-# Initialize SQLite database schema
-init_db()
+# Restrictive explicit CORS allowlist only (disabled by default when empty)
+_configured_cors_origins = get_cors_origins()
+if _configured_cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_configured_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],
+    )
+
+
+@app.exception_handler(BrowserAuthRedirectRequired)
+async def _handle_browser_auth_redirect(_request: Request, exc: BrowserAuthRedirectRequired):
+    return RedirectResponse(
+        url=login_redirect_location(exc.next_url),
+        status_code=status.HTTP_302_FOUND,
+    )
+
+
+def _request_effective_scheme(request: Request) -> str:
+    return resolve_effective_scheme(
+        client_host=request.client.host if request.client else None,
+        url_scheme=request.url.scheme,
+        x_forwarded_proto=request.headers.get("X-Forwarded-Proto"),
+    )
+
+
+@app.middleware("http")
+async def security_headers_and_tls_middleware(request: Request, call_next):
+    """Enforce production TLS requirements and attach baseline security headers."""
+    csp_nonce = secrets.token_urlsafe(16)
+    request.state.csp_nonce = csp_nonce
+    effective_scheme = _request_effective_scheme(request)
+
+    if is_https_enforced() and effective_scheme != "https":
+        log_security_event(
+            "tls_required_rejected",
+            outcome="denied",
+            client_ip=get_client_ip(request),
+            path=request.url.path,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": "HTTPS is required in production mode."},
+        )
+
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        f"default-src 'self'; "
+        f"script-src 'self' 'nonce-{csp_nonce}'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "object-src 'none'"
+    )
+    if not request.url.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "no-store, max-age=0")
+        response.headers.setdefault("Pragma", "no-cache")
+    if is_production_env() or effective_scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
 
 # Mount static files and templates
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-
-# Global service instances
-evaluator = ComplianceEvaluator()
-repository = SubmissionRepository()
-review_service = DocumentReviewService(repository=repository)
 
 
 # ============================================================================
@@ -83,10 +201,420 @@ class HumanReviewActionRequest(BaseModel):
     """Payload for recording a human review decision."""
     review_status: str = Field(description="Action: accepted_exception, deficiency_notice_required, waived, rejected")
     reviewer_notes: str = Field(min_length=1, description="Audit justification notes")
-    reviewer_name: str = Field(default="Compliance Coordinator", description="Name of the human reviewer")
+    reviewer_name: Optional[str] = Field(
+        default=None,
+        description="Ignored for attribution; reviewer identity is derived from the authenticated principal",
+    )
     update_submission_status: Optional[str] = Field(default=None, description="Optional override status")
     rule_id: Optional[str] = Field(default=None, description="Target requirement/rule ID when waiving a requirement")
     finding_id: Optional[str] = Field(default=None, description="Target finding ID")
+
+
+class AdminCreateUserRequest(BaseModel):
+    """Payload for administrator provisioning of an account."""
+    username: str = Field(min_length=3, max_length=64)
+    display_name: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=12, max_length=256)
+    role: str = Field(default="viewer")
+
+
+class AdminUpdateUserRequest(BaseModel):
+    """Payload for administrator updates to role, active status, or display name."""
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    display_name: Optional[str] = None
+
+
+class AdminCreateTokenRequest(BaseModel):
+    """Payload for issuing a revocable opaque API Bearer token."""
+    user_id: str = Field(min_length=1)
+    label: str = Field(min_length=1, max_length=100)
+    ttl_days: int = Field(default=30, ge=1, le=365)
+
+
+# ============================================================================
+# Authentication & Access Administration Endpoints
+# ============================================================================
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: Optional[str] = None):
+    """Render login form or redirect if already authenticated."""
+    existing = await resolve_optional_principal(request)
+    safe_next = sanitize_next_url(next)
+    if existing:
+        return RedirectResponse(url=safe_next, status_code=status.HTTP_302_FOUND)
+
+    csrf_tok = generate_login_csrf_token()
+    effective_scheme = _request_effective_scheme(request)
+    response = templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context={
+            "next_url": safe_next,
+            "login_csrf_token": csrf_tok,
+            "error_message": None,
+            "submitted_username": "",
+            "current_user": None,
+            "csrf_token": None,
+            "csp_nonce": getattr(request.state, "csp_nonce", ""),
+        },
+    )
+    response.set_cookie(
+        key=PRE_LOGIN_CSRF_COOKIE_NAME,
+        value=csrf_tok,
+        httponly=True,
+        samesite="lax",
+        secure=is_cookie_secure(effective_scheme),
+        max_age=600,
+        path="/login",
+    )
+    return response
+
+
+@app.post("/login")
+def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    csrf_token: Optional[str] = Form(None),
+    next: Optional[str] = Form(None),
+):
+    """Authenticate user credentials, set HttpOnly session cookie, and mitigate brute force."""
+    client_ip = get_client_ip(request)
+    norm_username = (username or "").strip().lower()
+    safe_next = sanitize_next_url(next)
+    effective_scheme = _request_effective_scheme(request)
+    cookie_secure = is_cookie_secure(effective_scheme)
+
+    per_user_limit, per_ip_limit, window_sec = get_login_rate_limits()
+    ip_ok, ip_retry = login_rate_limiter.check_and_record(
+        f"login_ip:{client_ip}", limit=per_ip_limit, window_seconds=window_sec
+    )
+    user_ok, user_retry = login_rate_limiter.check_and_record(
+        f"login_user:{client_ip}:{norm_username}", limit=per_user_limit, window_seconds=window_sec
+    )
+    if not ip_ok or not user_ok:
+        retry_after = max(ip_retry, user_retry)
+        log_security_event(
+            "login_rate_limited",
+            outcome="rate_limited",
+            username=norm_username or None,
+            client_ip=client_ip,
+            path=request.url.path,
+        )
+        fresh_csrf = generate_login_csrf_token()
+        resp = templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "next_url": safe_next,
+                "login_csrf_token": fresh_csrf,
+                "error_message": "Too many login attempts. Please wait and try again.",
+                "submitted_username": username,
+                "current_user": None,
+                "csrf_token": None,
+                "csp_nonce": getattr(request.state, "csp_nonce", ""),
+            },
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": str(retry_after)},
+        )
+        resp.set_cookie(
+            key=PRE_LOGIN_CSRF_COOKIE_NAME,
+            value=fresh_csrf,
+            httponly=True,
+            samesite="lax",
+            secure=cookie_secure,
+            max_age=600,
+            path="/login",
+        )
+        return resp
+
+    submitted_csrf = csrf_token or request.headers.get("X-CSRF-Token")
+    if not verify_login_csrf_token(request.cookies.get(PRE_LOGIN_CSRF_COOKIE_NAME), submitted_csrf):
+        log_security_event(
+            "login_csrf_failure",
+            outcome="denied",
+            username=norm_username or None,
+            client_ip=client_ip,
+            path=request.url.path,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or missing login CSRF token.",
+        )
+
+    user = auth_service.authenticate_credentials(norm_username, password)
+    if not user:
+        log_security_event(
+            "login_failure",
+            outcome="failure",
+            username=norm_username or None,
+            client_ip=client_ip,
+            path=request.url.path,
+        )
+        fresh_csrf = generate_login_csrf_token()
+        resp = templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "next_url": safe_next,
+                "login_csrf_token": fresh_csrf,
+                "error_message": "Invalid username or password.",
+                "submitted_username": username,
+                "current_user": None,
+                "csrf_token": None,
+                "csp_nonce": getattr(request.state, "csp_nonce", ""),
+            },
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+        resp.set_cookie(
+            key=PRE_LOGIN_CSRF_COOKIE_NAME,
+            value=fresh_csrf,
+            httponly=True,
+            samesite="lax",
+            secure=cookie_secure,
+            max_age=600,
+            path="/login",
+        )
+        return resp
+
+    raw_token, _csrf_tok, _ses_id = auth_service.create_session(user["id"])
+    log_security_event(
+        "login_success",
+        outcome="success",
+        username=user["username"],
+        user_id=user["id"],
+        role=user["role"],
+        client_ip=client_ip,
+        path=request.url.path,
+    )
+    redirect = RedirectResponse(url=safe_next, status_code=status.HTTP_303_SEE_OTHER)
+    redirect.delete_cookie(key=PRE_LOGIN_CSRF_COOKIE_NAME, path="/login")
+    redirect.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=raw_token,
+        httponly=True,
+        samesite="lax",
+        secure=cookie_secure,
+        path="/",
+    )
+    return redirect
+
+
+@app.post("/logout")
+def logout_submit(
+    request: Request,
+    current_user: AuthenticatedPrincipal = Depends(
+        require_ui_roles("viewer", "analyst", "reviewer", "admin")
+    ),
+):
+    """Terminate authenticated browser session (requires valid session + CSRF)."""
+    raw_cookie = request.cookies.get(SESSION_COOKIE_NAME, "")
+    auth_service.revoke_session_by_raw_token(raw_cookie)
+    log_security_event(
+        "logout",
+        outcome="success",
+        username=current_user.username,
+        user_id=current_user.user_id,
+        role=current_user.role,
+        client_ip=get_client_ip(request),
+        path=request.url.path,
+    )
+    resp = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    resp.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
+    return resp
+
+
+@app.get("/api/v1/auth/me")
+def get_current_principal_info(
+    current_user: AuthenticatedPrincipal = Depends(
+        require_api_roles("viewer", "analyst", "reviewer", "admin")
+    ),
+):
+    """Return authenticated principal metadata without secrets or hashes."""
+    return {
+        "id": current_user.user_id,
+        "username": current_user.username,
+        "display_name": current_user.display_name,
+        "role": current_user.role,
+        "auth_method": current_user.auth_method,
+    }
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+def admin_users_page(
+    request: Request,
+    current_user: AuthenticatedPrincipal = Depends(require_ui_roles("admin")),
+):
+    """Administrator UI for provisioning users and managing revocable API tokens."""
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_users.html",
+        context={
+            "users": auth_service.list_users(),
+            "tokens": auth_service.list_tokens(),
+            "active_nav": "admin",
+            "current_user": current_user,
+            "csrf_token": current_user.csrf_token,
+            "csp_nonce": getattr(request.state, "csp_nonce", ""),
+        },
+    )
+
+
+@app.get("/api/v1/admin/users")
+def admin_list_users(
+    _current_user: AuthenticatedPrincipal = Depends(require_api_roles("admin")),
+):
+    """List provisioned user accounts without password hashes."""
+    return auth_service.list_users()
+
+
+@app.post("/api/v1/admin/users", status_code=status.HTTP_201_CREATED)
+def admin_create_user(
+    request: Request,
+    payload: AdminCreateUserRequest,
+    current_user: AuthenticatedPrincipal = Depends(require_api_roles("admin")),
+):
+    """Provision a new single-tenant user with explicit role and scrypt password hash."""
+    if auth_service.get_user_by_username(payload.username):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Username '{payload.username.strip().lower()}' already exists.",
+        )
+    try:
+        created = auth_service.create_user(
+            username=payload.username,
+            display_name=payload.display_name,
+            password=payload.password,
+            role=payload.role,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    log_security_event(
+        "user_created",
+        outcome="success",
+        username=current_user.username,
+        user_id=current_user.user_id,
+        role=current_user.role,
+        client_ip=get_client_ip(request),
+        path=request.url.path,
+        details={"target_user_id": created["id"], "target_role": created["role"]},
+    )
+    return created
+
+
+@app.patch("/api/v1/admin/users/{user_id}")
+def admin_update_user(
+    request: Request,
+    user_id: str,
+    payload: AdminUpdateUserRequest,
+    current_user: AuthenticatedPrincipal = Depends(require_api_roles("admin")),
+):
+    """Update user role, display name, or active state; revoke sessions if demoted/disabled."""
+    if user_id == current_user.user_id and (
+        payload.is_active is False or (payload.role is not None and payload.role != "admin")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Administrators cannot disable or demote their own active account.",
+        )
+
+    if payload.is_active is False or (payload.role is not None and payload.role != "admin"):
+        active_admins = [
+            u for u in auth_service.list_users() if u["role"] == "admin" and u["is_active"]
+        ]
+        if len(active_admins) <= 1 and any(u["id"] == user_id for u in active_admins):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot remove or deactivate the last active administrator.",
+            )
+
+    try:
+        updated = auth_service.update_user(
+            user_id,
+            role=payload.role,
+            is_active=payload.is_active,
+            display_name=payload.display_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    log_security_event(
+        "user_updated",
+        outcome="success",
+        username=current_user.username,
+        user_id=current_user.user_id,
+        role=current_user.role,
+        client_ip=get_client_ip(request),
+        path=request.url.path,
+        details={"target_user_id": user_id, "role": updated["role"], "is_active": updated["is_active"]},
+    )
+    return updated
+
+
+@app.get("/api/v1/admin/tokens")
+def admin_list_tokens(
+    _current_user: AuthenticatedPrincipal = Depends(require_api_roles("admin")),
+):
+    """List active and revoked session/API token metadata without secrets."""
+    return auth_service.list_tokens()
+
+
+@app.post("/api/v1/admin/tokens", status_code=status.HTTP_201_CREATED)
+def admin_create_token(
+    request: Request,
+    payload: AdminCreateTokenRequest,
+    current_user: AuthenticatedPrincipal = Depends(require_api_roles("admin")),
+):
+    """Issue a revocable opaque API Bearer token (raw token returned once only)."""
+    try:
+        token_record = auth_service.create_api_token(
+            user_id=payload.user_id,
+            label=payload.label,
+            ttl_days=payload.ttl_days,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    log_security_event(
+        "api_token_created",
+        outcome="success",
+        username=current_user.username,
+        user_id=current_user.user_id,
+        role=current_user.role,
+        client_ip=get_client_ip(request),
+        path=request.url.path,
+        details={"token_id": token_record["id"], "target_user_id": payload.user_id},
+    )
+    return token_record
+
+
+@app.post("/api/v1/admin/tokens/{token_id}/revoke")
+def admin_revoke_token(
+    request: Request,
+    token_id: str,
+    current_user: AuthenticatedPrincipal = Depends(require_api_roles("admin")),
+):
+    """Revoke a session or API token by ID."""
+    revoked = auth_service.revoke_session_by_id(token_id)
+    if not revoked:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Active token or session not found")
+
+    log_security_event(
+        "api_token_revoked",
+        outcome="success",
+        username=current_user.username,
+        user_id=current_user.user_id,
+        role=current_user.role,
+        client_ip=get_client_ip(request),
+        path=request.url.path,
+        details={"token_id": token_id},
+    )
+    return {"status": "revoked", "id": token_id}
 
 
 # ============================================================================
@@ -95,7 +623,7 @@ class HumanReviewActionRequest(BaseModel):
 
 @app.get("/health", status_code=status.HTTP_200_OK)
 def health_check():
-    """Health check endpoint."""
+    """Public health check endpoint exposing minimal service status only."""
     return {"status": "ok", "service": "compliance-evaluator"}
 
 
@@ -104,6 +632,7 @@ def health_check():
     response_model=ComplianceReviewResult,
     status_code=status.HTTP_200_OK,
     summary="Evaluate an extracted document set against insurance requirements deterministically",
+    dependencies=[Depends(require_api_roles("analyst", "reviewer", "admin"))],
 )
 def evaluate_compliance(request: EvaluationRequest) -> ComplianceReviewResult:
     """Evaluate insurance documents against requirements.
@@ -114,9 +643,13 @@ def evaluate_compliance(request: EvaluationRequest) -> ComplianceReviewResult:
     - Uncertainty, missing fields, and ambiguities are surfaced explicitly.
     """
     try:
+        validated_reqs = validate_requirement_profile(
+            request.requirements,
+            enforce_effective_date_baseline=False,
+        )
         return evaluator.evaluate(
             document_set=request.document_set,
-            requirements=request.requirements,
+            requirements=validated_reqs,
             evaluation_date=request.evaluation_date,
         )
     except Exception as exc:
@@ -130,6 +663,7 @@ def evaluate_compliance(request: EvaluationRequest) -> ComplianceReviewResult:
     "/api/v1/compliance/review-documents",
     status_code=status.HTTP_200_OK,
     summary="Upload COI and endorsements, extract data, deterministically evaluate compliance, and persist",
+    dependencies=[Depends(require_api_roles("analyst", "reviewer", "admin"))],
 )
 async def review_documents(
     coi_file: UploadFile = File(..., description="Primary Certificate of Insurance PDF (ACORD 25)"),
@@ -151,15 +685,28 @@ async def review_documents(
                 detail=f"Invalid evaluation_date format: '{evaluation_date}'. Expected YYYY-MM-DD.",
             )
 
-    # 2. Parse custom requirements if provided
+    # 2. Parse and validate custom requirements if explicitly provided (never silently replace [] with defaults)
     parsed_reqs = None
-    if requirements:
+    if requirements is not None:
+        raw_reqs_text = requirements.strip()
+        if not raw_reqs_text:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid requirements payload: explicitly provided requirements string cannot be empty.",
+            )
         try:
-            req_data = json.loads(requirements)
-            if isinstance(req_data, list):
-                parsed_reqs = [InsuranceRequirement.model_validate(r) for r in req_data]
-            else:
+            req_data = json.loads(raw_reqs_text)
+            if not isinstance(req_data, list):
                 raise ValueError("Requirements must be a JSON array")
+            if len(req_data) == 0:
+                raise ValueError(
+                    "Requirement profile cannot be empty; omit 'requirements' to use the default policy or provide at least one requirement."
+                )
+            validated_items = [InsuranceRequirement.model_validate(r) for r in req_data]
+            parsed_reqs = validate_requirement_profile(
+                validated_items,
+                enforce_effective_date_baseline=False,
+            )
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -189,43 +736,134 @@ async def review_documents(
         )
 
 
+def _resolve_confined_upload_path(raw_storage_path: str) -> Path:
+    """Resolve stored document path and verify strict, symlink-free containment under upload dir."""
+    allowed_root = get_upload_dir().resolve()
+    raw_path = Path(raw_storage_path)
+
+    if raw_path.is_symlink():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: symbolic document paths are prohibited.",
+        )
+
+    # Reject any symlink component inside or above the upload target within allowed_root
+    try:
+        resolved = raw_path.resolve(strict=False)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: invalid document path.",
+        ) from exc
+
+    if not resolved.is_relative_to(allowed_root):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: document path escapes authorized storage.",
+        )
+
+    # Check every path component inside allowed_root for symlinks
+    rel_parts = resolved.relative_to(allowed_root).parts
+    walker = allowed_root
+    for part in rel_parts:
+        walker = walker / part
+        if walker.exists() and walker.is_symlink():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: symbolic link inside storage directory.",
+            )
+
+    return resolved
+
+
+def _sanitize_download_filename(filename: Optional[str], fallback: str = "document.pdf") -> str:
+    base = Path(filename or fallback).name
+    cleaned = re.sub(r"[^A-Za-z0-9._ -]", "_", base).strip(" .")
+    if not cleaned:
+        cleaned = fallback
+    if not cleaned.lower().endswith(".pdf"):
+        cleaned = f"{cleaned}.pdf"
+    return cleaned[:150]
+
+
 @app.get("/api/v1/documents/{document_id}/download")
-def download_document(document_id: str):
-    """Secure document download endpoint with path-traversal prevention."""
-    conn = repository.get_submission_by_id
-    # Query document by ID
-    from app.persistence.database import get_connection
-    conn = get_connection()
+def download_document(
+    document_id: str,
+    request: Request,
+    current_user: AuthenticatedPrincipal = Depends(
+        require_api_roles("viewer", "analyst", "reviewer", "admin")
+    ),
+):
+    """Secure authenticated document download endpoint with strict path confinement."""
+    conn = get_connection(repository.db_path)
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT storage_path, original_filename FROM documents WHERE id = ?",
+            """
+            SELECT d.id, d.submission_id, d.storage_path, d.original_filename
+            FROM documents d
+            JOIN submissions s ON s.id = d.submission_id
+            WHERE d.id = ?
+            """,
             (document_id,),
         )
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-        file_path = Path(row["storage_path"])
-        if not file_path.exists() or not file_path.is_file():
+        try:
+            confined_path = _resolve_confined_upload_path(row["storage_path"])
+        except HTTPException:
+            log_security_event(
+                "document_download_denied",
+                outcome="denied",
+                username=current_user.username,
+                user_id=current_user.user_id,
+                role=current_user.role,
+                client_ip=get_client_ip(request),
+                path=request.url.path,
+                details={"document_id": document_id, "submission_id": row["submission_id"]},
+            )
+            raise
+
+        if not confined_path.exists() or not confined_path.is_file():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file missing on disk")
 
+        safe_name = _sanitize_download_filename(row["original_filename"], fallback=f"{document_id}.pdf")
+        log_security_event(
+            "document_download_allowed",
+            outcome="success",
+            username=current_user.username,
+            user_id=current_user.user_id,
+            role=current_user.role,
+            client_ip=get_client_ip(request),
+            path=request.url.path,
+            details={"document_id": document_id, "submission_id": row["submission_id"]},
+        )
         return FileResponse(
-            path=str(file_path),
-            filename=row["original_filename"],
+            path=str(confined_path),
+            filename=safe_name,
             media_type="application/pdf",
+            content_disposition_type="attachment",
+            headers={"X-Content-Type-Options": "nosniff"},
         )
     finally:
         conn.close()
 
 
-@app.get("/api/v1/submissions")
+@app.get(
+    "/api/v1/submissions",
+    dependencies=[Depends(require_api_roles("viewer", "analyst", "reviewer", "admin"))],
+)
 def list_submissions_api(status: Optional[str] = None, q: Optional[str] = None):
     """Query past submissions with optional status filter and text search."""
     return repository.list_submissions(status_filter=status, search_query=q)
 
 
-@app.get("/api/v1/submissions/{submission_id}")
+@app.get(
+    "/api/v1/submissions/{submission_id}",
+    dependencies=[Depends(require_api_roles("viewer", "analyst", "reviewer", "admin"))],
+)
 def get_submission_api(submission_id: str):
     """Retrieve full submission details and findings by ID."""
     sub = repository.get_submission_by_id(submission_id)
@@ -245,10 +883,19 @@ VALID_SUBMISSION_STATUSES = {
     "compliant",
     "non_compliant",
     "requires_human_review",
+    "missing_evidence",
+    "unable_to_determine",
     "waived",
     "rejected",
     "deficiency_pending",
     "resolved_compliant",
+}
+
+BLOCKING_FINDING_STATUSES = {
+    ComplianceStatus.NON_COMPLIANT.value,
+    ComplianceStatus.MISSING_EVIDENCE.value,
+    ComplianceStatus.UNABLE_TO_DETERMINE.value,
+    ComplianceStatus.REQUIRES_HUMAN_REVIEW.value,
 }
 
 NON_WAIVABLE_RULE_TYPES = {
@@ -257,30 +904,193 @@ NON_WAIVABLE_RULE_TYPES = {
     RequirementType.NAMED_INSURED,
 }
 
+NON_WAIVABLE_RULE_TYPE_VALUES = {
+    *(rt.value for rt in NON_WAIVABLE_RULE_TYPES),
+    "entity_identity",
+}
+
 NON_WAIVABLE_REASON_CODES = {
     "POLICY_EXPIRED",
     "INVALID_DATE_RANGE_INVERTED",
     "POLICY_FUTURE_INCEPTION",
+    "ENDORSEMENT_EXPIRED",
+    "ENDORSEMENT_FUTURE_INCEPTION",
     "NAMED_INSURED_MISMATCH",
+    "CONFIRMED_ENTITY_MISMATCH",
     "COVERAGE_NOT_FOUND",
 }
 
 
+def _is_finding_non_waivable(finding: Dict[str, Any]) -> bool:
+    """Return True if a finding cannot legally or safely be waived."""
+    r_type = finding.get("rule_type")
+    r_code = finding.get("reason_code")
+    return r_type in NON_WAIVABLE_RULE_TYPE_VALUES or r_code in NON_WAIVABLE_REASON_CODES
+
+
+def _resolve_target_finding(
+    findings: List[Dict[str, Any]],
+    raw_finding_id: Optional[str],
+    raw_rule_id: Optional[str],
+) -> tuple[Optional[int], Optional[Dict[str, Any]]]:
+    """Identify the unique target finding by finding_id and/or rule_id."""
+    fid = (raw_finding_id or "").strip() or None
+    rid = (raw_rule_id or "").strip() or None
+    if not fid and not rid:
+        return None, None
+
+    fid_matches: List[tuple[int, Dict[str, Any]]] = []
+    if fid:
+        fid_matches = [(i, f) for i, f in enumerate(findings) if f.get("finding_id") == fid]
+        if not fid_matches:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Requirement or finding '{fid}' not found in submission.",
+            )
+
+    rid_matches: List[tuple[int, Dict[str, Any]]] = []
+    if rid:
+        rid_matches = [
+            (i, f)
+            for i, f in enumerate(findings)
+            if f.get("requirement_id") == rid or f.get("finding_id") == rid
+        ]
+        if not rid_matches:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Requirement or finding '{rid}' not found in submission.",
+            )
+        if len(rid_matches) > 1 and not fid:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Multiple findings match rule_id '{rid}'; specify exact finding_id.",
+            )
+
+    if fid and rid:
+        fid_idx = fid_matches[0][0]
+        if fid_idx not in {idx for idx, _ in rid_matches}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Conflicting finding_id '{fid}' and rule_id '{rid}' specified.",
+            )
+        return fid_matches[0]
+
+    return fid_matches[0] if fid_matches else rid_matches[0]
+
+
+def _match_history_finding_indices(
+    findings: List[Dict[str, Any]],
+    rev_finding_id: Optional[str],
+) -> List[int]:
+    """Map an existing review_records.finding_id back to its automated finding index."""
+    if not rev_finding_id:
+        return []
+    exact = [i for i, f in enumerate(findings) if f.get("finding_id") == rev_finding_id]
+    if exact:
+        return exact
+    by_req = [i for i, f in enumerate(findings) if f.get("requirement_id") == rev_finding_id]
+    return by_req if len(by_req) == 1 else []
+
+
+def _replay_finding_states(
+    findings: List[Dict[str, Any]],
+    existing_reviews_asc: List[Dict[str, Any]],
+) -> tuple[List[str], List[bool], List[bool]]:
+    """Compute effective per-finding statuses from immutable evaluation + append-only review history."""
+    effective_status = [
+        str(f.get("status") or ComplianceStatus.UNABLE_TO_DETERMINE.value)
+        for f in findings
+    ]
+    effective_hr = [bool(f.get("requires_human_review", False)) for f in findings]
+    was_waived = [False] * len(findings)
+
+    for rev in existing_reviews_asc:
+        r_status = rev.get("review_status")
+        matched = _match_history_finding_indices(findings, rev.get("finding_id"))
+
+        if len(matched) == 1:
+            idx = matched[0]
+            orig_status = str(findings[idx].get("status") or "")
+            if r_status == "waived" and not _is_finding_non_waivable(findings[idx]):
+                effective_status[idx] = "waived"
+                effective_hr[idx] = False
+                was_waived[idx] = True
+            elif r_status == "accepted_exception" and orig_status != ComplianceStatus.NON_COMPLIANT.value:
+                effective_status[idx] = "resolved_compliant"
+                effective_hr[idx] = False
+                was_waived[idx] = False
+            elif r_status in ("deficiency_notice_required", "rejected"):
+                effective_status[idx] = orig_status or ComplianceStatus.REQUIRES_HUMAN_REVIEW.value
+                effective_hr[idx] = True
+                was_waived[idx] = False
+        elif not rev.get("finding_id") and r_status == "accepted_exception":
+            blocking = [
+                i
+                for i in range(len(findings))
+                if effective_status[i] in BLOCKING_FINDING_STATUSES or effective_hr[i]
+            ]
+            if len(blocking) == 1 and effective_status[blocking[0]] == ComplianceStatus.REQUIRES_HUMAN_REVIEW.value:
+                idx = blocking[0]
+                effective_status[idx] = "resolved_compliant"
+                effective_hr[idx] = False
+                was_waived[idx] = False
+
+    return effective_status, effective_hr, was_waived
+
+
+def _compute_server_submission_status(
+    action_review_status: str,
+    findings: List[Dict[str, Any]],
+    effective_status: List[str],
+    effective_hr: List[bool],
+    was_waived: List[bool],
+) -> tuple[str, List[int]]:
+    """Derive authoritative overall submission status from all findings after the current action."""
+    unresolved = [
+        i
+        for i in range(len(findings))
+        if effective_status[i] in BLOCKING_FINDING_STATUSES or effective_hr[i]
+    ]
+
+    if action_review_status == "rejected":
+        return "rejected", unresolved
+    if action_review_status == "deficiency_notice_required":
+        return "deficiency_pending", unresolved
+
+    if unresolved:
+        unresolved_statuses = {effective_status[i] for i in unresolved}
+        if ComplianceStatus.NON_COMPLIANT.value in unresolved_statuses:
+            return ComplianceStatus.NON_COMPLIANT.value, unresolved
+        if ComplianceStatus.MISSING_EVIDENCE.value in unresolved_statuses:
+            return ComplianceStatus.MISSING_EVIDENCE.value, unresolved
+        if ComplianceStatus.UNABLE_TO_DETERMINE.value in unresolved_statuses:
+            return ComplianceStatus.UNABLE_TO_DETERMINE.value, unresolved
+        return ComplianceStatus.REQUIRES_HUMAN_REVIEW.value, unresolved
+
+    if any(was_waived):
+        return "waived", unresolved
+    return ComplianceStatus.COMPLIANT.value, unresolved
+
+
 @app.post("/api/v1/submissions/{submission_id}/review")
-def record_human_review_api(submission_id: str, payload: HumanReviewActionRequest):
-    """Record an auditable human review decision for a submission.
+def record_human_review_api(
+    submission_id: str,
+    payload: HumanReviewActionRequest,
+    request: Request,
+    current_user: AuthenticatedPrincipal = Depends(require_api_roles("reviewer", "admin")),
+):
+    """Record an auditable per-finding human review decision for a submission.
 
     Architecture principles enforced:
     1. AI extracts; deterministic rules evaluate; humans resolve uncertainty.
     2. Deterministic hard-failure rules cannot be silently bypassed or approved.
-    3. Waivers must specify target rule/finding IDs and cannot waive non-waivable rules.
-    4. Reviewer identity, justification notes, and timestamps are strictly recorded.
-    5. Original automated evaluation results are permanently preserved in result_json.
+    3. Every blocking status (NON_COMPLIANT, MISSING_EVIDENCE, UNABLE_TO_DETERMINE,
+       REQUIRES_HUMAN_REVIEW) is evaluated individually per finding before resolution.
+    4. Waivers apply strictly to the targeted waivable finding and never waive others.
+    5. Final submission status is calculated server-side from full finding state and
+       persisted atomically alongside the append-only audit record; result_json is immutable.
+    6. Reviewer identity is derived exclusively from the authenticated principal.
     """
-    sub = repository.get_submission_by_id(submission_id)
-    if not sub:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
-
     # 1. Validate decision value
     if payload.review_status not in VALID_REVIEW_STATUSES:
         raise HTTPException(
@@ -288,13 +1098,15 @@ def record_human_review_api(submission_id: str, payload: HumanReviewActionReques
             detail=f"Invalid review_status '{payload.review_status}'. Allowed values: {sorted(VALID_REVIEW_STATUSES)}",
         )
 
-    # 2. Validate reviewer identity
-    reviewer_name = (payload.reviewer_name or "").strip()
-    if not reviewer_name:
+    # 2. Reject explicit blank/whitespace client reviewer_name and ALWAYS bind to server principal
+    if payload.reviewer_name is not None and not payload.reviewer_name.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Reviewer name / identity cannot be empty.",
         )
+
+    reviewer_name = (current_user.display_name or "").strip() or current_user.username
+    reviewer_user_id = current_user.user_id
 
     # 3. Validate reviewer notes
     reviewer_notes = (payload.reviewer_notes or "").strip()
@@ -304,99 +1116,251 @@ def record_human_review_api(submission_id: str, payload: HumanReviewActionReques
             detail="Review notes cannot be empty.",
         )
 
-    # 4. Extract automated findings to inspect deterministic compliance state
-    review = sub.get("result", {}).get("review", {})
-    findings = review.get("findings", [])
-    non_compliant_findings = [f for f in findings if f.get("status") == "non_compliant"]
-
-    target_rule = (payload.rule_id or payload.finding_id or "").strip() or None
-    target_finding = None
-    target_reason_code = None
-
-    if target_rule and findings:
-        for f in findings:
-            if f.get("requirement_id") == target_rule or f.get("finding_id") == target_rule:
-                target_finding = f
-                target_reason_code = f.get("reason_code")
-                break
-
-    # 5. Prevent approval when hard-failure rules exist
-    if payload.review_status == "accepted_exception":
-        if non_compliant_findings:
-            failed_ids = [f.get("requirement_id", "unknown") for f in non_compliant_findings]
+    # 4. Validate requested operational submission status format (never trusted blindly)
+    requested_status: Optional[str] = None
+    if payload.update_submission_status and payload.update_submission_status.strip():
+        requested_status = payload.update_submission_status.strip().lower()
+        if requested_status not in VALID_SUBMISSION_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"Cannot approve submission: deterministic hard failure exists on requirements: {failed_ids}. "
-                    "Hard compliance failures cannot be accepted via blanket approval. "
-                    "Explicit rule waiver or corrected documentation is required."
-                ),
+                detail=f"Invalid update_submission_status '{requested_status}'. Allowed values: {sorted(VALID_SUBMISSION_STATUSES)}",
             )
 
-    # 6. Enforce waiver rules and non-waivability
-    if payload.review_status == "waived":
-        if not target_rule:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Waiver action requires specifying a target rule_id or finding_id.",
-            )
+    def _evaluate_and_build(
+        sub: Optional[Dict[str, Any]],
+        existing_reviews_asc: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not sub:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
 
-        if findings and not target_finding:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Requirement or finding '{target_rule}' not found in submission.",
-            )
+        review = sub.get("result", {}).get("review", {})
+        findings: List[Dict[str, Any]] = review.get("findings", []) or []
 
-        if target_finding:
-            r_type = target_finding.get("rule_type")
-            r_code = target_finding.get("reason_code")
-            if r_type in [rt.value for rt in NON_WAIVABLE_RULE_TYPES] or r_code in NON_WAIVABLE_REASON_CODES:
+        target_idx, target_finding = _resolve_target_finding(
+            findings,
+            payload.finding_id,
+            payload.rule_id,
+        )
+        effective_status, effective_hr, was_waived = _replay_finding_states(
+            findings,
+            existing_reviews_asc,
+        )
+
+        blocking_before = [
+            i
+            for i in range(len(findings))
+            if effective_status[i] in BLOCKING_FINDING_STATUSES or effective_hr[i]
+        ]
+        non_compliant_before = [
+            i for i in blocking_before if effective_status[i] == ComplianceStatus.NON_COMPLIANT.value
+        ]
+        recorded_finding = target_finding
+
+        if payload.review_status == "waived":
+            if target_finding is None or target_idx is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Waiver action requires specifying a target rule_id or finding_id.",
+                )
+            if _is_finding_non_waivable(target_finding):
+                r_code = target_finding.get("reason_code")
+                label = payload.rule_id or payload.finding_id or target_finding.get("requirement_id")
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=(
-                        f"Requirement '{target_rule}' ({r_code}) is non-waivable. "
+                        f"Requirement '{label}' ({r_code}) is non-waivable. "
                         "Active coverage dates, valid policy terms, and verified legal entity "
                         "identity cannot be waived."
                     ),
                 )
+            effective_status[target_idx] = "waived"
+            effective_hr[target_idx] = False
+            was_waived[target_idx] = True
 
-    # 7. Validate and apply operational submission status
-    update_status = payload.update_submission_status
-    if update_status:
-        update_status = update_status.strip().lower()
-        if update_status not in VALID_SUBMISSION_STATUSES:
+        elif payload.review_status == "accepted_exception":
+            if target_finding is not None and target_idx is not None:
+                orig_status = str(target_finding.get("status") or "")
+                if (
+                    effective_status[target_idx] == ComplianceStatus.NON_COMPLIANT.value
+                    or (orig_status == ComplianceStatus.NON_COMPLIANT.value and not was_waived[target_idx])
+                ):
+                    req_id = target_finding.get("requirement_id", "unknown")
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            f"Cannot approve submission: deterministic hard failure exists on requirements: {[req_id]}. "
+                            "Hard compliance failures cannot be accepted via blanket approval. "
+                            "Explicit rule waiver or corrected documentation is required."
+                        ),
+                    )
+                effective_status[target_idx] = "resolved_compliant"
+                effective_hr[target_idx] = False
+                was_waived[target_idx] = False
+            else:
+                if non_compliant_before:
+                    failed_ids = [findings[i].get("requirement_id", "unknown") for i in non_compliant_before]
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            f"Cannot approve submission: deterministic hard failure exists on requirements: {failed_ids}. "
+                            "Hard compliance failures cannot be accepted via blanket approval. "
+                            "Explicit rule waiver or corrected documentation is required."
+                        ),
+                    )
+                missing_or_unable = [
+                    i
+                    for i in blocking_before
+                    if effective_status[i]
+                    in {
+                        ComplianceStatus.MISSING_EVIDENCE.value,
+                        ComplianceStatus.UNABLE_TO_DETERMINE.value,
+                    }
+                ]
+                if missing_or_unable:
+                    missing_ids = [findings[i].get("requirement_id", "unknown") for i in missing_or_unable]
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            f"Cannot resolve submission without targeting specific findings for {missing_ids}. "
+                            "Specify target rule_id or finding_id to resolve MISSING_EVIDENCE or UNABLE_TO_DETERMINE findings individually."
+                        ),
+                    )
+                if len(blocking_before) > 1:
+                    pending_ids = [findings[i].get("requirement_id", "unknown") for i in blocking_before]
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            f"Multiple unresolved blocking findings remain ({pending_ids}); "
+                            "specify target rule_id or finding_id to resolve each finding individually."
+                        ),
+                    )
+                if len(blocking_before) == 1:
+                    idx = blocking_before[0]
+                    effective_status[idx] = "resolved_compliant"
+                    effective_hr[idx] = False
+                    was_waived[idx] = False
+                    recorded_finding = findings[idx]
+                elif not findings and sub.get("overall_status") in {
+                    ComplianceStatus.NON_COMPLIANT.value,
+                    ComplianceStatus.MISSING_EVIDENCE.value,
+                    ComplianceStatus.UNABLE_TO_DETERMINE.value,
+                }:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            f"Cannot mark submission '{sub.get('overall_status')}' compliant "
+                            "without underlying verifiable findings."
+                        ),
+                    )
+
+        elif payload.review_status in ("deficiency_notice_required", "rejected"):
+            if target_finding is not None and target_idx is not None:
+                effective_status[target_idx] = str(
+                    target_finding.get("status") or ComplianceStatus.REQUIRES_HUMAN_REVIEW.value
+                )
+                effective_hr[target_idx] = True
+                was_waived[target_idx] = False
+
+        server_status, remaining_blocking = _compute_server_submission_status(
+            action_review_status=payload.review_status,
+            findings=findings,
+            effective_status=effective_status,
+            effective_hr=effective_hr,
+            was_waived=was_waived,
+        )
+
+        # Reject caller-supplied transitions that conflict with authoritative finding state
+        if requested_status in ("compliant", "resolved_compliant"):
+            if payload.review_status in ("deficiency_notice_required", "rejected"):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Cannot set submission status to '{requested_status}' when recording '{payload.review_status}'.",
+                )
+            if remaining_blocking:
+                rem_ids = [findings[i].get("requirement_id", "unknown") for i in remaining_blocking]
+                rem_statuses = sorted({effective_status[i] for i in remaining_blocking})
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"Cannot set submission status to '{requested_status}' while unresolved blocking findings "
+                        f"({rem_statuses}) remain on requirements: {rem_ids}."
+                    ),
+                )
+            if server_status == "waived":
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Cannot set submission status to 'compliant' when requirements were resolved by waiver.",
+                )
+        elif requested_status == "waived" and remaining_blocking:
+            rem_ids = [findings[i].get("requirement_id", "unknown") for i in remaining_blocking]
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Invalid update_submission_status '{update_status}'. Allowed values: {sorted(VALID_SUBMISSION_STATUSES)}",
-            )
-        # Prevent setting 'compliant' if hard failures remain
-        if update_status in ("compliant", "resolved_compliant") and non_compliant_findings and payload.review_status != "waived":
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Cannot set submission status to 'compliant' while deterministic non-compliant findings exist.",
+                detail=f"Cannot set submission status to 'waived' while unresolved blocking findings remain: {rem_ids}.",
             )
 
-    review_rec = repository.add_review_record(
+        audit_finding_id = (
+            (recorded_finding.get("finding_id") or recorded_finding.get("requirement_id"))
+            if recorded_finding
+            else ((payload.finding_id or payload.rule_id or "").strip() or None)
+        )
+        audit_reason_code = recorded_finding.get("reason_code") if recorded_finding else None
+
+        return {
+            "finding_id": audit_finding_id,
+            "reason_code": audit_reason_code,
+            "review_status": payload.review_status,
+            "reviewer_notes": reviewer_notes,
+            "reviewer_name": reviewer_name,
+            "reviewer_user_id": reviewer_user_id,
+            "overall_status": server_status,
+        }
+
+    result = repository.record_human_review_atomic(
         submission_id=submission_id,
-        review_status=payload.review_status,
-        reviewer_notes=reviewer_notes,
-        reviewer_name=reviewer_name,
-        finding_id=target_finding.get("finding_id") if target_finding else target_rule,
-        reason_code=target_reason_code,
-        update_submission_status=update_status,
+        evaluate_decision=_evaluate_and_build,
     )
-    return {"status": "ok", "review": review_rec}
+    log_security_event(
+        "human_review_recorded",
+        outcome="success",
+        username=current_user.username,
+        user_id=current_user.user_id,
+        role=current_user.role,
+        client_ip=get_client_ip(request),
+        path=request.url.path,
+        details={
+            "submission_id": submission_id,
+            "review_status": payload.review_status,
+            "overall_status": result["overall_status"],
+        },
+    )
+    return {"status": "ok", "overall_status": result["overall_status"], "review": result["review"]}
 
 
-@app.get("/api/v1/dashboard/stats")
+@app.get(
+    "/api/v1/dashboard/stats",
+    dependencies=[Depends(require_api_roles("viewer", "analyst", "reviewer", "admin"))],
+)
 def get_dashboard_stats_api():
     """Return real aggregate statistics for the dashboard."""
     return repository.get_dashboard_stats()
 
 
-@app.post("/api/v1/compliance/demo-run/{scenario_id}")
+@app.post(
+    "/api/v1/compliance/demo-run/{scenario_id}",
+    dependencies=[Depends(require_api_roles("analyst", "reviewer", "admin"))],
+)
 def run_synthetic_demo_scenario(scenario_id: str):
     """Run a bundled synthetic scenario from cohort_scenarios_v1.json with one click."""
+    if not is_demo_endpoint_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Synthetic demo-run endpoint is disabled in this environment.",
+        )
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", scenario_id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid scenario identifier.",
+        )
     fixtures_dir = BASE_DIR.parent / "evaluation" / "fixtures" / "pdfs"
     cohort_fixtures_dir = BASE_DIR.parent / "evaluation" / "cohorts" / "fixtures"
     ann_file = BASE_DIR.parent / "evaluation" / "annotations" / "cohort_scenarios_v1.json"
@@ -446,19 +1410,20 @@ def run_synthetic_demo_scenario(scenario_id: str):
         pdf_bytes = pdf_path.read_bytes()
         doc_id = f"doc_{uuid4().hex[:12]}"
 
-        # Save to demo uploads
-        sub_upload_dir = review_service.repository.db_path or (review_service.pdf_processor.max_pdf_size_bytes)
-        target_store = review_service.pdf_processor
-        demo_dest = BASE_DIR.parent / "data" / "uploads" / sub_id
+        # Save to configured upload dir (respects SUBGUARD_UPLOAD_DIR)
+        demo_dest = get_upload_dir().resolve() / sub_id
         demo_dest.mkdir(parents=True, exist_ok=True)
-        stored_path = demo_dest / f"{doc_id}_{fname}"
+        stored_path = demo_dest / f"{doc_id}_{Path(fname).name}"
         stored_path.write_bytes(pdf_bytes)
 
         insp = review_service.pdf_processor.process_pdf(pdf_bytes, document_id=doc_id)
         inspections.append(insp)
 
+        from app.extraction.pipeline import ExtractionPipelineService
+        from app.extraction.providers.mock import HonestApplicationMockProvider
+
         pipe_res = ExtractionPipelineService(
-            extraction_provider=review_service.evaluator and HonestApplicationMockProvider()
+            extraction_provider=HonestApplicationMockProvider()
         ).process_inspection(insp, subcontractor_id=target_scen.get("subcontractor_id", "sub_apex"))
 
         if pipe_res.document_set:
@@ -480,12 +1445,18 @@ def run_synthetic_demo_scenario(scenario_id: str):
     combined_coverages = []
     combined_endorsements = []
     named_insured_info = None
+    additional_named_insureds = []
     cert_holder_info = None
     contradictions = []
 
     for ds in doc_sets:
-        if ds.named_insured and (not named_insured_info or not named_insured_info.name):
-            named_insured_info = ds.named_insured
+        if ds.named_insured and (ds.named_insured.name or ds.named_insured.evidence):
+            if not named_insured_info or not named_insured_info.name:
+                named_insured_info = ds.named_insured
+            else:
+                additional_named_insureds.append(ds.named_insured)
+        if ds.additional_named_insureds:
+            additional_named_insureds.extend(ds.additional_named_insureds)
         if ds.certificate_holder and (not cert_holder_info or not cert_holder_info.name):
             cert_holder_info = ds.certificate_holder
         combined_coverages.extend(ds.coverages)
@@ -497,10 +1468,22 @@ def run_synthetic_demo_scenario(scenario_id: str):
         documents_submitted=[i.classified_type for i in inspections],
         is_document_set_complete=True,
         named_insured=named_insured_info,
+        additional_named_insureds=additional_named_insureds,
         certificate_holder=cert_holder_info,
         coverages=combined_coverages,
         endorsements=combined_endorsements,
         raw_contradictions_detected=contradictions,
+    )
+
+    from app.compliance.reconciliation import reconcile_extracted_document_set
+    from app.extraction.pipeline import reconcile_cross_document_set
+
+    reconcile_cross_document_set(composite_set)
+    composite_set.reconciliation_result = reconcile_extracted_document_set(
+        document_set=composite_set,
+        requirements=reqs,
+        evaluation_date=eval_d,
+        packet_id=sub_id,
     )
 
     review_result = review_service.evaluator.evaluate(
@@ -546,42 +1529,75 @@ def run_synthetic_demo_scenario(scenario_id: str):
 # Web UI Pages
 # ============================================================================
 
-@app.get("/", response_class=HTMLResponse)
+def _ui_context(request: Request, current_user: AuthenticatedPrincipal, **extra: Any) -> Dict[str, Any]:
+    return {
+        "current_user": current_user,
+        "csrf_token": current_user.csrf_token,
+        "csp_nonce": getattr(request.state, "csp_nonce", ""),
+        **extra,
+    }
+
+
+@app.get(
+    "/",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_ui_roles("viewer", "analyst", "reviewer", "admin"))],
+)
 def index_redirect():
     """Root redirects to Dashboard."""
     return RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-def dashboard_page(request: Request):
+def dashboard_page(
+    request: Request,
+    current_user: AuthenticatedPrincipal = Depends(
+        require_ui_roles("viewer", "analyst", "reviewer", "admin")
+    ),
+):
     """Page 1: Executive Dashboard showing real statistics and recent submissions."""
     stats = repository.get_dashboard_stats()
     recent = repository.list_submissions(limit=10)
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={
-            "stats": stats,
-            "recent_submissions": recent,
-            "active_nav": "dashboard",
-        },
+        context=_ui_context(
+            request,
+            current_user,
+            stats=stats,
+            recent_submissions=recent,
+            active_nav="dashboard",
+        ),
     )
 
 
 @app.get("/submissions/new", response_class=HTMLResponse)
-def new_submission_page(request: Request):
+def new_submission_page(
+    request: Request,
+    current_user: AuthenticatedPrincipal = Depends(
+        require_ui_roles("analyst", "reviewer", "admin")
+    ),
+):
     """Page 2: Document upload and review configuration form."""
     return templates.TemplateResponse(
         request=request,
         name="new_submission.html",
-        context={
-            "active_nav": "new",
-        },
+        context=_ui_context(
+            request,
+            current_user,
+            active_nav="new",
+        ),
     )
 
 
 @app.get("/submissions/{submission_id}", response_class=HTMLResponse)
-def submission_detail_page(request: Request, submission_id: str):
+def submission_detail_page(
+    request: Request,
+    submission_id: str,
+    current_user: AuthenticatedPrincipal = Depends(
+        require_ui_roles("viewer", "analyst", "reviewer", "admin")
+    ),
+):
     """Page 3: Submission review results, statuses, and findings."""
     sub = repository.get_submission_by_id(submission_id)
     if not sub:
@@ -590,15 +1606,23 @@ def submission_detail_page(request: Request, submission_id: str):
     return templates.TemplateResponse(
         request=request,
         name="submission_detail.html",
-        context={
-            "submission": sub,
-            "active_nav": "history",
-        },
+        context=_ui_context(
+            request,
+            current_user,
+            submission=sub,
+            active_nav="history",
+        ),
     )
 
 
 @app.get("/submissions/{submission_id}/evidence", response_class=HTMLResponse)
-def evidence_viewer_page(request: Request, submission_id: str):
+def evidence_viewer_page(
+    request: Request,
+    submission_id: str,
+    current_user: AuthenticatedPrincipal = Depends(
+        require_ui_roles("viewer", "analyst", "reviewer", "admin")
+    ),
+):
     """Page 4: Evidence trace viewer showing source quotes, page numbers, and verification."""
     sub = repository.get_submission_by_id(submission_id)
     if not sub:
@@ -607,15 +1631,23 @@ def evidence_viewer_page(request: Request, submission_id: str):
     return templates.TemplateResponse(
         request=request,
         name="evidence_viewer.html",
-        context={
-            "submission": sub,
-            "active_nav": "history",
-        },
+        context=_ui_context(
+            request,
+            current_user,
+            submission=sub,
+            active_nav="history",
+        ),
     )
 
 
 @app.get("/submissions/{submission_id}/review", response_class=HTMLResponse)
-def human_review_page(request: Request, submission_id: str):
+def human_review_page(
+    request: Request,
+    submission_id: str,
+    current_user: AuthenticatedPrincipal = Depends(
+        require_ui_roles("reviewer", "admin")
+    ),
+):
     """Page 5: Human review resolution form for pending flags or exceptions."""
     sub = repository.get_submission_by_id(submission_id)
     if not sub:
@@ -624,10 +1656,12 @@ def human_review_page(request: Request, submission_id: str):
     return templates.TemplateResponse(
         request=request,
         name="human_review.html",
-        context={
-            "submission": sub,
-            "active_nav": "history",
-        },
+        context=_ui_context(
+            request,
+            current_user,
+            submission=sub,
+            active_nav="history",
+        ),
     )
 
 
@@ -636,16 +1670,21 @@ def submission_history_page(
     request: Request,
     status: Optional[str] = None,
     q: Optional[str] = None,
+    current_user: AuthenticatedPrincipal = Depends(
+        require_ui_roles("viewer", "analyst", "reviewer", "admin")
+    ),
 ):
     """Page 6: Auditable submission history with search and status filtering."""
     submissions = repository.list_submissions(status_filter=status, search_query=q)
     return templates.TemplateResponse(
         request=request,
         name="submission_history.html",
-        context={
-            "submissions": submissions,
-            "status_filter": status,
-            "search_query": q,
-            "active_nav": "history",
-        },
+        context=_ui_context(
+            request,
+            current_user,
+            submissions=submissions,
+            status_filter=status,
+            search_query=q,
+            active_nav="history",
+        ),
     )

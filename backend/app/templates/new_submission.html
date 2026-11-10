@@ -129,7 +129,12 @@
     </div>
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
+    function getCsrfToken() {
+        const meta = document.querySelector('meta[name="csrf-token"]');
+        return meta ? meta.getAttribute('content') : '';
+    }
+
     // Initialize date to today
     document.getElementById('evaluation_date').value = new Date().toISOString().split('T')[0];
 
@@ -212,7 +217,11 @@
         if (errBox) errBox.style.display = 'none';
 
         try {
-            const response = await fetch('/api/v1/compliance/demo-run/' + scenarioId, { method: 'POST' });
+            const response = await fetch('/api/v1/compliance/demo-run/' + scenarioId, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'X-CSRF-Token': getCsrfToken() }
+            });
             if (!response.ok) {
                 const err = await response.json();
                 throw new Error(err.detail || 'Demo run failed');
@@ -247,6 +256,8 @@
         try {
             const res = await fetch('/api/v1/compliance/review-documents', {
                 method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'X-CSRF-Token': getCsrfToken() },
                 body: formData
             });
 

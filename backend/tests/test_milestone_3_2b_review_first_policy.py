@@ -306,9 +306,24 @@ class TestMilestone32BReviewFirstPolicy(unittest.TestCase):
         """10. Verified supporting evidence produces COMPLIANT with requires_human_review = False."""
         cov = CoverageExtraction(
             coverage_type=CoverageType.GENERAL_LIABILITY,
-            each_occurrence=MoneyValue(amount_cents=100_000_000, raw_text="$1,000,000", confidence=0.99),
-            expiration_date=DateValue(date=dt_date(2026, 1, 1), raw_text="01/01/2026", confidence=0.99),
-            effective_date=DateValue(date=dt_date(2025, 1, 1), raw_text="01/01/2025", confidence=0.99),
+            each_occurrence=MoneyValue(
+                amount_cents=100_000_000,
+                raw_text="$1,000,000",
+                confidence=0.99,
+                evidence=EvidenceReference(document_id="D1", page_number=1, source_text="EACH OCCURRENCE: $1,000,000"),
+            ),
+            expiration_date=DateValue(
+                date=dt_date(2026, 1, 1),
+                raw_text="01/01/2026",
+                confidence=0.99,
+                evidence=EvidenceReference(document_id="D1", page_number=1, source_text="EXP: 01/01/2026"),
+            ),
+            effective_date=DateValue(
+                date=dt_date(2025, 1, 1),
+                raw_text="01/01/2025",
+                confidence=0.99,
+                evidence=EvidenceReference(document_id="D1", page_number=1, source_text="EFF: 01/01/2025"),
+            ),
             evidence=EvidenceReference(document_id="D1", page_number=1, source_text="GL $1M"),
         )
         end = EndorsementExtraction(

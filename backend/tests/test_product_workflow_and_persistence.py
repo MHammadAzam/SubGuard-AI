@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from datetime import date
@@ -27,6 +28,7 @@ from app.main import app, repository
 from app.persistence.database import get_connection, init_db
 from app.persistence.repository import SubmissionRepository
 from app.schemas.insurance import ComplianceStatus
+from tests.fixtures.auth_helpers import authenticate_session_client
 
 
 class TestSQLitePersistence(unittest.TestCase):
@@ -152,8 +154,31 @@ class TestDocumentUploadAndReviewAPI(unittest.TestCase):
     """Test the document upload endpoint, validation, security, and responses."""
 
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "prod_wf.db"
+        self.upload_dir = Path(self.temp_dir.name) / "uploads"
+        self._orig_repo_db = repository.db_path
+        self._orig_env_db = os.environ.get("SUBGUARD_DB_PATH")
+        self._orig_env_up = os.environ.get("SUBGUARD_UPLOAD_DIR")
+        os.environ["SUBGUARD_DB_PATH"] = str(self.db_path)
+        os.environ["SUBGUARD_UPLOAD_DIR"] = str(self.upload_dir)
+        init_db(self.db_path)
+        repository.db_path = self.db_path
         self.client = TestClient(app)
+        authenticate_session_client(self.client, db_path=self.db_path, role="admin")
         self.fixtures_dir = Path(__file__).resolve().parent.parent / "evaluation" / "fixtures" / "pdfs"
+
+    def tearDown(self):
+        repository.db_path = self._orig_repo_db
+        if self._orig_env_db is None:
+            os.environ.pop("SUBGUARD_DB_PATH", None)
+        else:
+            os.environ["SUBGUARD_DB_PATH"] = self._orig_env_db
+        if self._orig_env_up is None:
+            os.environ.pop("SUBGUARD_UPLOAD_DIR", None)
+        else:
+            os.environ["SUBGUARD_UPLOAD_DIR"] = self._orig_env_up
+        self.temp_dir.cleanup()
 
     def test_reject_missing_coi(self):
         """Missing required coi_file returns 422 Unprocessable Entity."""
@@ -263,7 +288,23 @@ class TestFrontendWebPages(unittest.TestCase):
     """Test all 6 HTML frontend pages render successfully."""
 
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "frontend_pages.db"
+        self._orig_repo_db = repository.db_path
+        self._orig_env_db = os.environ.get("SUBGUARD_DB_PATH")
+        os.environ["SUBGUARD_DB_PATH"] = str(self.db_path)
+        init_db(self.db_path)
+        repository.db_path = self.db_path
         self.client = TestClient(app)
+        authenticate_session_client(self.client, db_path=self.db_path, role="admin")
+
+    def tearDown(self):
+        repository.db_path = self._orig_repo_db
+        if self._orig_env_db is None:
+            os.environ.pop("SUBGUARD_DB_PATH", None)
+        else:
+            os.environ["SUBGUARD_DB_PATH"] = self._orig_env_db
+        self.temp_dir.cleanup()
 
     def test_dashboard_page_loads(self):
         res = self.client.get("/dashboard")

@@ -27,6 +27,7 @@ from app.main import app, repository
 from app.persistence.database import init_db
 from app.persistence.repository import SubmissionRepository
 from app.schemas.insurance import ComplianceStatus, RequirementType, Severity
+from tests.fixtures.auth_helpers import authenticate_session_client
 
 
 class TestHumanReviewIntegrity(unittest.TestCase):
@@ -36,13 +37,20 @@ class TestHumanReviewIntegrity(unittest.TestCase):
         self.client = TestClient(app)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / f"test_review_{uuid4().hex[:8]}.db"
+        self._orig_repo_db = repository.db_path
         init_db(self.db_path)
+        repository.db_path = self.db_path
         self.test_repo = SubmissionRepository(db_path=self.db_path)
-        # Point the application's repository to this test database during test
-        self.orig_repo = app.state if hasattr(app, "state") else None
-        # We will test both via client and using submissions created in DB
+        authenticate_session_client(
+            self.client,
+            db_path=self.db_path,
+            username="quality_officer",
+            display_name="Quality Officer",
+            role="reviewer",
+        )
 
     def tearDown(self):
+        repository.db_path = self._orig_repo_db
         self.temp_dir.cleanup()
 
     def _create_submission_in_repo(self, sub_id: str, findings: list, overall_status: str):
@@ -315,7 +323,14 @@ class TestHumanReviewIntegrity(unittest.TestCase):
         sub_id = f"sub_repeat_{uuid4().hex[:8]}"
         self._create_submission_in_repo(sub_id, [], "requires_human_review")
 
-        # First review: deficiency notice
+        # First review: deficiency notice (authenticated as Reviewer A)
+        authenticate_session_client(
+            self.client,
+            db_path=self.db_path,
+            username="reviewer_a",
+            display_name="Reviewer A",
+            role="reviewer",
+        )
         res1 = self.client.post(
             f"/api/v1/submissions/{sub_id}/review",
             json={
@@ -327,7 +342,14 @@ class TestHumanReviewIntegrity(unittest.TestCase):
         )
         self.assertEqual(res1.status_code, 200)
 
-        # Second review: subsequent resolution
+        # Second review: subsequent resolution (authenticated as Reviewer B)
+        authenticate_session_client(
+            self.client,
+            db_path=self.db_path,
+            username="reviewer_b",
+            display_name="Reviewer B",
+            role="reviewer",
+        )
         res2 = self.client.post(
             f"/api/v1/submissions/{sub_id}/review",
             json={

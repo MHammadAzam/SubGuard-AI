@@ -6,6 +6,7 @@ from app.compliance.reconciliation import (
     classify_document_relationship,
     reconcile_dates,
     reconcile_entity_identities,
+    reconcile_extracted_document_set,
     reconcile_policy_identifiers,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "classify_document_relationship",
     "reconcile_dates",
     "reconcile_entity_identities",
+    "reconcile_extracted_document_set",
     "reconcile_policy_identifiers",
 ]

@@ -23,6 +23,7 @@ from __future__ import annotations
 import io
 import math
 import subprocess
+import tempfile
 from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -490,69 +491,81 @@ class TestMilestone33HybridOCR:
 
     def test_12_evidence_highlighting_in_browser(self):
         """12. Evidence highlighting in the browser: HTML renders OCR badge and bounding box attributes."""
+        from app.persistence.database import init_db
+        from tests.fixtures.auth_helpers import authenticate_session_client
+
         client = TestClient(app)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            orig_db = repository.db_path
+            try:
+                tmp_db = Path(tmp_dir) / "ocr_ui_test.db"
+                init_db(tmp_db)
+                repository.db_path = tmp_db
+                authenticate_session_client(client, db_path=tmp_db, role="viewer")
 
-        # Create a submission with an OCR evidence reference in the repository
-        sub_id = f"test_ocr_ui_{uuid4().hex[:6]}"
-        sample_doc_set = ExtractedDocumentSet(
-            subcontractor_id="sub_apex",
-            documents_submitted=[DocumentType.COI],
-            is_document_set_complete=True,
-            named_insured=None,
-            certificate_holder=None,
-            coverages=[],
-            endorsements=[],
-            raw_contradictions_detected=[],
-        )
-        # Add coverage with OCR evidence reference and bounding box
-        from app.schemas.insurance import CoverageExtraction, MoneyValue
-        cov = CoverageExtraction(
-            coverage_type=CoverageType.GENERAL_LIABILITY,
-            policy_number="GL-OCR-1234",
-            each_occurrence=MoneyValue(amount_cents=100_000_000, raw_text="$1,000,000"),
-            evidence=EvidenceReference(
-                document_id="doc_sample",
-                document_type=DocumentType.COI,
-                page_number=2,
-                source_text="General Liability $1,000,000",
-                bounding_box=BoundingBox(x=0.1, y=0.2, width=0.3, height=0.05),
-                ocr_provider="mock_ocr",
-                confidence=0.96,
-                processing_status="ocr_extracted",
-            ),
-            extraction_status=ExtractionStatus.EXTRACTED,
-        )
-        sample_doc_set.coverages.append(cov)
+                # Create a submission with an OCR evidence reference in the repository
+                sub_id = f"test_ocr_ui_{uuid4().hex[:6]}"
+                sample_doc_set = ExtractedDocumentSet(
+                    subcontractor_id="sub_apex",
+                    documents_submitted=[DocumentType.COI],
+                    is_document_set_complete=True,
+                    named_insured=None,
+                    certificate_holder=None,
+                    coverages=[],
+                    endorsements=[],
+                    raw_contradictions_detected=[],
+                )
+                # Add coverage with OCR evidence reference and bounding box
+                from app.schemas.insurance import CoverageExtraction, MoneyValue
+                cov = CoverageExtraction(
+                    coverage_type=CoverageType.GENERAL_LIABILITY,
+                    policy_number="GL-OCR-1234",
+                    each_occurrence=MoneyValue(amount_cents=100_000_000, raw_text="$1,000,000"),
+                    evidence=EvidenceReference(
+                        document_id="doc_sample",
+                        document_type=DocumentType.COI,
+                        page_number=2,
+                        source_text="General Liability $1,000,000",
+                        bounding_box=BoundingBox(x=0.1, y=0.2, width=0.3, height=0.05),
+                        ocr_provider="mock_ocr",
+                        confidence=0.96,
+                        processing_status="ocr_extracted",
+                    ),
+                    extraction_status=ExtractionStatus.EXTRACTED,
+                )
+                sample_doc_set.coverages.append(cov)
 
-        serialized = {
-            "review": {
-                "overall_status": "requires_human_review",
-                "findings": [],
-                "summary": "OCR Test Submission",
-                "evaluation_date": "2025-06-15",
-            },
-            "document_set": sample_doc_set.model_dump(mode="json"),
-            "pipeline_errors": [],
-        }
+                serialized = {
+                    "review": {
+                        "overall_status": "requires_human_review",
+                        "findings": [],
+                        "summary": "OCR Test Submission",
+                        "evaluation_date": "2025-06-15",
+                    },
+                    "document_set": sample_doc_set.model_dump(mode="json"),
+                    "pipeline_errors": [],
+                }
 
-        repository.create_submission(
-            submission_id=sub_id,
-            name="OCR UI Acceptance Test",
-            overall_status="requires_human_review",
-            processing_status="completed",
-            provider="mock",
-            evaluation_date="2025-06-15",
-            result_data=serialized,
-            subcontractor_name="Apex Electrical Contractors LLC",
-        )
+                repository.create_submission(
+                    submission_id=sub_id,
+                    name="OCR UI Acceptance Test",
+                    overall_status="requires_human_review",
+                    processing_status="completed",
+                    provider="mock",
+                    evaluation_date="2025-06-15",
+                    result_data=serialized,
+                    subcontractor_name="Apex Electrical Contractors LLC",
+                )
 
-        resp = client.get(f"/submissions/{sub_id}/evidence")
-        assert resp.status_code == 200
-        html = resp.text
-        # Verify OCR badge and data-bbox attributes exist in the rendered HTML
-        assert "OCR (mock_ocr)" in html
-        assert 'data-bbox-x="0.1"' in html
-        assert 'data-bbox-y="0.2"' in html
+                resp = client.get(f"/submissions/{sub_id}/evidence")
+                assert resp.status_code == 200
+                html = resp.text
+                # Verify OCR badge and data-bbox attributes exist in the rendered HTML
+                assert "OCR (mock_ocr)" in html
+                assert 'data-bbox-x="0.1"' in html
+                assert 'data-bbox-y="0.2"' in html
+            finally:
+                repository.db_path = orig_db
         assert 'Page 2' in html
 
     def test_13_ocr_extraction_with_missing_or_unreliable_text(self):

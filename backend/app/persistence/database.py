@@ -86,7 +86,44 @@ def init_db(db_path: Path | None = None) -> None:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_reviews_submission ON review_records(submission_id);
+
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('viewer', 'analyst', 'reviewer', 'admin')),
+                    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    token_kind TEXT NOT NULL DEFAULT 'session' CHECK (token_kind IN ('session', 'api_token')),
+                    label TEXT,
+                    csrf_token TEXT,
+                    created_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+                CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
                 """
             )
+
+            existing_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(review_records)").fetchall()
+            }
+            if "reviewer_user_id" not in existing_cols:
+                conn.execute("ALTER TABLE review_records ADD COLUMN reviewer_user_id TEXT;")
     finally:
         conn.close()

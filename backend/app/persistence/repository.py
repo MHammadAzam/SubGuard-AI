@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
 from app.persistence.database import get_connection
@@ -161,10 +161,10 @@ class SubmissionRepository:
             cursor.execute(
                 """
                 SELECT id, finding_id, reason_code, review_status,
-                       reviewer_notes, reviewer_name, created_at, resolved_at
+                       reviewer_notes, reviewer_name, reviewer_user_id, created_at, resolved_at
                 FROM review_records
                 WHERE submission_id = ?
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, rowid DESC
                 """,
                 (submission_id,),
             )
@@ -306,4 +306,103 @@ class SubmissionRepository:
             "reviewer_name": reviewer_name,
             "created_at": ts,
             "resolved_at": ts,
+        }
+
+    def record_human_review_atomic(
+        self,
+        submission_id: str,
+        evaluate_decision: Callable[[Optional[Dict[str, Any]], List[Dict[str, Any]]], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Atomically evaluate and persist a human-review decision and resulting status.
+
+        Acquires an immediate SQLite write lock before reading the submission and existing
+        append-only review history so concurrent review requests cannot race past
+        per-finding invariants. Rolls back completely if any validation or DB step fails.
+        """
+        review_id = f"rev_{uuid4().hex[:12]}"
+        ts = _now_iso()
+        conn = get_connection(self.db_path)
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN IMMEDIATE;")
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, name, created_at, overall_status, processing_status,
+                       provider, evaluation_date, subcontractor_name, result_json
+                FROM submissions
+                WHERE id = ?
+                """,
+                (submission_id,),
+            )
+            row = cursor.fetchone()
+            sub_dict: Optional[Dict[str, Any]] = None
+            existing_reviews_asc: List[Dict[str, Any]] = []
+            if row:
+                sub_dict = dict(row)
+                try:
+                    sub_dict["result"] = json.loads(sub_dict["result_json"])
+                except Exception:
+                    sub_dict["result"] = {}
+
+                cursor.execute(
+                    """
+                    SELECT id, finding_id, reason_code, review_status,
+                           reviewer_notes, reviewer_name, reviewer_user_id, created_at, resolved_at
+                    FROM review_records
+                    WHERE submission_id = ?
+                    ORDER BY created_at ASC, rowid ASC
+                    """,
+                    (submission_id,),
+                )
+                existing_reviews_asc = [dict(r) for r in cursor.fetchall()]
+
+            decision = evaluate_decision(sub_dict, existing_reviews_asc)
+
+            cursor.execute(
+                """
+                INSERT INTO review_records (
+                    id, submission_id, finding_id, reason_code, review_status,
+                    reviewer_notes, reviewer_name, reviewer_user_id, created_at, resolved_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id,
+                    submission_id,
+                    decision.get("finding_id"),
+                    decision.get("reason_code"),
+                    decision["review_status"],
+                    decision["reviewer_notes"],
+                    decision["reviewer_name"],
+                    decision.get("reviewer_user_id"),
+                    ts,
+                    ts,
+                ),
+            )
+            cursor.execute(
+                "UPDATE submissions SET overall_status = ? WHERE id = ?",
+                (decision["overall_status"], submission_id),
+            )
+            conn.execute("COMMIT;")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK;")
+            raise
+        finally:
+            conn.close()
+
+        return {
+            "overall_status": decision["overall_status"],
+            "review": {
+                "id": review_id,
+                "submission_id": submission_id,
+                "finding_id": decision.get("finding_id"),
+                "reason_code": decision.get("reason_code"),
+                "review_status": decision["review_status"],
+                "reviewer_notes": decision["reviewer_notes"],
+                "reviewer_name": decision["reviewer_name"],
+                "reviewer_user_id": decision.get("reviewer_user_id"),
+                "created_at": ts,
+                "resolved_at": ts,
+            },
         }

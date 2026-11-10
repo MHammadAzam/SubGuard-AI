@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if csrf_token %}
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    {% endif %}
     <title>{% block title %}SubGuard AI — Certificate Compliance{% endblock %}</title>
     <link rel="stylesheet" href="/static/css/app.css">
 </head>
@@ -16,15 +19,36 @@
                 </a>
                 <span class="brand-subtitle">Insurance Compliance Engine</span>
             </div>
+            {% if current_user %}
             <nav class="app-nav">
                 <a href="/dashboard" class="nav-link {% if active_nav == 'dashboard' %}active{% endif %}">Dashboard</a>
+                {% if current_user.role in ['analyst', 'reviewer', 'admin'] %}
                 <a href="/submissions/new" class="nav-link {% if active_nav == 'new' %}active{% endif %}">+ New Review</a>
+                {% endif %}
                 <a href="/submissions" class="nav-link {% if active_nav == 'history' %}active{% endif %}">History</a>
+                {% if current_user.role == 'admin' %}
+                <a href="/admin/users" class="nav-link {% if active_nav == 'admin' %}active{% endif %}">Admin</a>
+                {% endif %}
             </nav>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <div class="provider-badge">
+                    <span class="badge-dot"></span>
+                    <span class="badge-label">Provider: <strong>Mock Mode (Offline)</strong></span>
+                </div>
+                <div class="provider-badge">
+                    <span class="badge-label">{{ current_user.display_name }} (<strong>{{ current_user.role }}</strong>)</span>
+                </div>
+                <form method="POST" action="/logout" style="margin: 0;">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token or '' }}">
+                    <button type="submit" class="btn btn-secondary btn-sm">Sign Out</button>
+                </form>
+            </div>
+            {% else %}
             <div class="provider-badge">
                 <span class="badge-dot"></span>
-                <span class="badge-label">Provider: <strong>Mock Mode (Offline)</strong></span>
+                <span class="badge-label">Authentication Required</span>
             </div>
+            {% endif %}
         </div>
     </header>
 

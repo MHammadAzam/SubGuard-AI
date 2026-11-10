@@ -56,6 +56,23 @@ from app.schemas.raw_extraction import (
 )
 
 
+_ENTITY_SUFFIX_CANON = {
+    "llc": "llc",
+    "llcs": "llc",
+    "inc": "inc",
+    "incorporated": "inc",
+    "corp": "corp",
+    "corporation": "corp",
+    "co": "co",
+    "company": "co",
+    "ltd": "ltd",
+    "limited": "ltd",
+    "pllc": "pllc",
+    "lp": "lp",
+}
+_ENTITY_STOPWORDS = {"the", "and", "of", "for", "&"}
+
+
 def _clean_str(text: Optional[str]) -> str:
     if not text:
         return ""
@@ -63,18 +80,195 @@ def _clean_str(text: Optional[str]) -> str:
     return " ".join(cleaned.split())
 
 
+def _canonical_entity_tokens(text: Optional[str]) -> List[str]:
+    """Tokenize an entity string after collapsing dotted corporate abbreviations (L.L.C. -> llc)."""
+    if not text:
+        return []
+    # Normalize dotted abbreviations such as L.L.C., P.L.L.C., L.P., Inc., Corp.
+    pre = re.sub(r"\b([A-Za-z])(?:\.([A-Za-z])){1,4}\.?", lambda m: re.sub(r"\.", "", m.group(0)), text)
+    raw_tokens = re.findall(r"[a-z0-9]+", pre.lower())
+    return [_ENTITY_SUFFIX_CANON.get(t, t) for t in raw_tokens if t]
+
+
 def _verify_entity_semantic_support(name: Optional[str], quote_text: Optional[str]) -> bool:
+    """Verify quote_text explicitly contains the claimed entity name without single-token false positives."""
     if not name or not quote_text:
         return False
-    c_name = _clean_str(name)
-    c_quote = _clean_str(quote_text)
-    if not c_name or not c_quote:
+
+    name_tokens = _canonical_entity_tokens(name)
+    quote_tokens = _canonical_entity_tokens(quote_text)
+    if not name_tokens or not quote_tokens:
         return False
-    if c_name in c_quote or c_quote in c_name:
+
+    # 1. Exact contiguous canonical token slice match (handles punctuation / case / Inc vs Incorporated)
+    n_len = len(name_tokens)
+    for i in range(len(quote_tokens) - n_len + 1):
+        if quote_tokens[i : i + n_len] == name_tokens:
+            return True
+
+    # 2. Core tokens check: all non-suffix, non-stopword tokens of entity must appear in order
+    # without contradicting suffix (e.g. Inc vs LLC)
+    suffix_set = set(_ENTITY_SUFFIX_CANON.values())
+    name_suffix = name_tokens[-1] if name_tokens[-1] in suffix_set else None
+    core_tokens = [
+        t for t in name_tokens
+        if t not in suffix_set and t not in _ENTITY_STOPWORDS
+    ]
+    if not core_tokens:
+        return False
+
+    # Require ALL core tokens in order inside quote_tokens (single-token entity must match exact token)
+    q_idx = 0
+    matched_positions: List[int] = []
+    for ct in core_tokens:
+        found = False
+        while q_idx < len(quote_tokens):
+            if quote_tokens[q_idx] == ct:
+                matched_positions.append(q_idx)
+                q_idx += 1
+                found = True
+                break
+            q_idx += 1
+        if not found:
+            return False
+
+    # Ensure matched core tokens occur close together (within the same entity mention window)
+    if len(matched_positions) >= 2 and (matched_positions[-1] - matched_positions[0]) > len(core_tokens) + 3:
+        return False
+
+    # If entity declares a corporate suffix, disallow an adjacent conflicting corporate suffix in quote
+    if name_suffix is not None and matched_positions:
+        tail_window = quote_tokens[matched_positions[-1] + 1 : matched_positions[-1] + 4]
+        found_suffixes = [t for t in tail_window if t in suffix_set]
+        if found_suffixes and name_suffix not in found_suffixes:
+            return False
+
+    return True
+
+
+_LIMIT_FIELD_LABELS = {
+    "each_occurrence": ("each occurrence", "per occurrence", "occurrence"),
+    "general_aggregate": ("general aggregate", "aggregate"),
+    "products_completed_ops": ("products", "completed op", "comp/op"),
+    "personal_adv_injury": ("personal", "adv injury"),
+    "combined_single_limit": ("combined single", "csl"),
+    "per_accident": ("each accident", "per accident"),
+    "disease_each_employee": ("each employee",),
+    "disease_policy_limit": ("policy limit",),
+}
+
+
+_CURRENCY_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9\-\.])(?:\$\s*)?[0-9][0-9,\.]*(?:\s*(?:million|m|k))?(?![A-Za-z0-9\-\./])",
+    re.IGNORECASE,
+)
+
+_TEXT_DATE_CANDIDATE_RE = re.compile(
+    r"\b\d{4}-\d{1,2}-\d{1,2}\b"
+    r"|\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b"
+    r"|\b(?:January|Jan|February|Feb|March|Mar|April|Apr|May|June|Jun|"
+    r"July|Jul|August|Aug|September|Sep|Sept|October|Oct|November|Nov|December|Dec)\.?\s+\d{1,2},?\s+\d{4}\b"
+    r"|\b\d{1,2}\s+(?:January|Jan|February|Feb|March|Mar|April|Apr|May|June|Jun|"
+    r"July|Jul|August|Aug|September|Sep|Sept|October|Oct|November|Nov|December|Dec)\.?\s+\d{4}\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_normalized_amounts_cents(text: Optional[str]) -> List[int]:
+    """Extract and normalize monetary amount tokens present in text into integer cents."""
+    if not text:
+        return []
+    values: List[int] = []
+    for match in _CURRENCY_TOKEN_RE.finditer(text):
+        token = match.group(0).strip()
+        # Bare numbers without '$' or K/M or commas must have at least 4 digits to represent currency limits
+        if "$" not in token and "," not in token and not re.search(r"[mk]\b", token, re.I):
+            plain_digits = token.split(".")[0]
+            if len(plain_digits) < 4:
+                continue
+        cents, is_amb, _ = normalize_currency_to_cents(token)
+        if not is_amb and cents is not None:
+            values.append(cents)
+    return values
+
+
+def _extract_normalized_dates(text: Optional[str]) -> List:
+    """Extract and normalize valid date tokens present in text."""
+    if not text:
+        return []
+    parsed_dates = []
+    for match in _TEXT_DATE_CANDIDATE_RE.finditer(text):
+        parsed_d, is_amb, _ = normalize_date(match.group(0))
+        if not is_amb and parsed_d is not None:
+            parsed_dates.append(parsed_d)
+    return parsed_dates
+
+
+def _verify_money_field_support(
+    field_name: str,
+    amount_cents: int,
+    raw_str: Optional[str],
+    quote_text: Optional[str],
+) -> bool:
+    """Verify that quote_text genuinely supports a specific coverage limit field by normalized value."""
+    if not quote_text or not quote_text.strip():
+        return False
+    lower_q = quote_text.lower()
+    target_labels = _LIMIT_FIELD_LABELS.get(field_name, ())
+    has_target_label = any(lbl in lower_q for lbl in target_labels)
+    has_other_label = any(
+        lbl in lower_q
+        for other_field, labels in _LIMIT_FIELD_LABELS.items()
+        if other_field != field_name
+        for lbl in labels
+        if lbl not in target_labels
+    )
+    if has_other_label and not has_target_label:
+        return False
+
+    quote_amounts = _extract_normalized_amounts_cents(quote_text)
+    if amount_cents in quote_amounts:
         return True
-    tokens = [t for t in c_name.split() if len(t) > 2 and t not in ("the", "and", "llc", "inc", "corp", "ltd", "co")]
-    if tokens and any(t in c_quote for t in tokens):
+
+    # Fallback: exact raw string token match (only if non-numeric / textual match) bounded by word edges
+    if raw_str and raw_str.strip():
+        escaped = re.escape(raw_str.strip())
+        if re.search(rf"(?<![A-Za-z0-9]){escaped}(?![A-Za-z0-9])", quote_text, re.I):
+            return True
+    return False
+
+
+def _verify_date_field_support(
+    date_field: str,
+    parsed_date,
+    raw_str: Optional[str],
+    quote_text: Optional[str],
+) -> bool:
+    """Verify that quote_text genuinely supports a policy effective or expiration date."""
+    if not quote_text or not quote_text.strip() or parsed_date is None:
+        return False
+    lower_q = quote_text.lower()
+    if date_field == "effective":
+        other_only = ("expir" in lower_q or "exp:" in lower_q) and not any(
+            k in lower_q for k in ("eff:", "effective", "policy eff", "inception", "from")
+        )
+        if other_only:
+            return False
+    elif date_field == "expiration":
+        other_only = ("eff:" in lower_q or "effective" in lower_q or "policy eff" in lower_q) and not any(
+            k in lower_q for k in ("exp:", "expir", "policy exp", "until", "through", "to")
+        )
+        if other_only:
+            return False
+
+    quote_dates = _extract_normalized_dates(quote_text)
+    if parsed_date in quote_dates:
         return True
+
+    if raw_str and raw_str.strip():
+        escaped = re.escape(raw_str.strip().lower())
+        if re.search(rf"(?<![0-9]){escaped}(?![0-9])", lower_q):
+            return True
     return False
 
 
@@ -82,6 +276,7 @@ def _verify_coverage_semantic_support(cov_raw: RawCoverageSection, quote_text: O
     if not quote_text:
         return False
     c_quote = _clean_str(quote_text)
+    quote_amounts = set(_extract_normalized_amounts_cents(quote_text))
     limits = [
         cov_raw.each_occurrence,
         cov_raw.general_aggregate,
@@ -92,19 +287,18 @@ def _verify_coverage_semantic_support(cov_raw: RawCoverageSection, quote_text: O
     ]
     for lim in limits:
         if lim:
-            c_lim = _clean_str(lim)
-            if c_lim and (c_lim in c_quote or c_quote in c_lim):
+            cents, is_amb, _ = normalize_currency_to_cents(lim)
+            if not is_amb and cents is not None and cents in quote_amounts:
                 return True
-            digits = re.sub(r"\D", "", lim)
-            if digits and len(digits) >= 4 and digits in re.sub(r"\D", "", quote_text):
+            c_lim = _clean_str(lim)
+            if c_lim and re.search(rf"\b{re.escape(c_lim)}\b", c_quote):
                 return True
 
     if cov_raw.policy_number:
         c_pol = _clean_str(cov_raw.policy_number)
-        if c_pol and (c_pol in c_quote or c_quote in c_pol):
+        if c_pol and c_pol in c_quote:
             return True
 
-    c_type = _clean_str(cov_raw.coverage_type)
     if any(k in c_quote for k in ["liability", "general", "auto", "workers", "umbrella", "excess", "occurrence", "aggregate", "csl"]):
         return True
 
@@ -351,7 +545,12 @@ class ExtractionPipelineService:
             processing_status=proc_stat,
         )
 
-    def _build_money_value(self, raw_str: Optional[str], confidence: Optional[float]) -> Optional[MoneyValue]:
+    def _build_money_value(
+        self,
+        raw_str: Optional[str],
+        confidence: Optional[float],
+        evidence: Optional[EvidenceReference] = None,
+    ) -> Optional[MoneyValue]:
         if not raw_str or not raw_str.strip():
             return None
 
@@ -364,9 +563,15 @@ class ExtractionPipelineService:
             amount_cents=cents,
             raw_text=raw_str.strip(),
             confidence=confidence,
+            evidence=evidence,
         )
 
-    def _build_date_value(self, raw_str: Optional[str], confidence: Optional[float]) -> Optional[DateValue]:
+    def _build_date_value(
+        self,
+        raw_str: Optional[str],
+        confidence: Optional[float],
+        evidence: Optional[EvidenceReference] = None,
+    ) -> Optional[DateValue]:
         if not raw_str or not raw_str.strip():
             return None
 
@@ -378,7 +583,74 @@ class ExtractionPipelineService:
             date=parsed_date,
             raw_text=raw_str.strip(),
             confidence=confidence,
+            evidence=evidence,
         )
+
+    def _build_field_money_value(
+        self,
+        field_name: str,
+        raw_str: Optional[str],
+        field_quote: Optional[RawEvidenceQuote],
+        fallback_cov_ev: Optional[EvidenceReference],
+        confidence: Optional[float],
+        document_id: str,
+        document_type: DocumentType,
+        pages: List[PDFPageInspection],
+    ) -> Optional[MoneyValue]:
+        mv = self._build_money_value(raw_str, confidence)
+        if mv is None:
+            return None
+
+        resolved_ev: Optional[EvidenceReference] = None
+        if field_quote is not None:
+            cand = self._resolve_evidence(
+                document_id=document_id,
+                document_type=document_type,
+                quote=field_quote,
+                pages=pages,
+            )
+            if cand and _verify_money_field_support(field_name, mv.amount_cents, raw_str, cand.source_text):
+                resolved_ev = cand
+        elif fallback_cov_ev is not None and _verify_money_field_support(
+            field_name, mv.amount_cents, raw_str, fallback_cov_ev.source_text
+        ):
+            resolved_ev = fallback_cov_ev
+
+        mv.evidence = resolved_ev
+        return mv
+
+    def _build_field_date_value(
+        self,
+        date_field: str,
+        raw_str: Optional[str],
+        field_quote: Optional[RawEvidenceQuote],
+        fallback_cov_ev: Optional[EvidenceReference],
+        confidence: Optional[float],
+        document_id: str,
+        document_type: DocumentType,
+        pages: List[PDFPageInspection],
+    ) -> Optional[DateValue]:
+        dv = self._build_date_value(raw_str, confidence)
+        if dv is None:
+            return None
+
+        resolved_ev: Optional[EvidenceReference] = None
+        if field_quote is not None:
+            cand = self._resolve_evidence(
+                document_id=document_id,
+                document_type=document_type,
+                quote=field_quote,
+                pages=pages,
+            )
+            if cand and _verify_date_field_support(date_field, dv.date, raw_str, cand.source_text):
+                resolved_ev = cand
+        elif fallback_cov_ev is not None and _verify_date_field_support(
+            date_field, dv.date, raw_str, fallback_cov_ev.source_text
+        ):
+            resolved_ev = fallback_cov_ev
+
+        dv.evidence = resolved_ev
+        return dv
 
     def process_inspection(
         self,
@@ -558,16 +830,46 @@ class ExtractionPipelineService:
                 coverage_type=norm_cov_type,
                 policy_number=raw_cov.policy_number,
                 insurer_name=raw_cov.insurer_name,
-                each_occurrence=self._build_money_value(raw_cov.each_occurrence, raw_cov.confidence),
-                general_aggregate=self._build_money_value(raw_cov.general_aggregate, raw_cov.confidence),
-                products_completed_ops=self._build_money_value(raw_cov.products_completed_ops, raw_cov.confidence),
-                personal_adv_injury=self._build_money_value(raw_cov.personal_adv_injury, raw_cov.confidence),
-                combined_single_limit=self._build_money_value(raw_cov.combined_single_limit, raw_cov.confidence),
-                per_accident=self._build_money_value(raw_cov.per_accident, raw_cov.confidence),
-                disease_each_employee=self._build_money_value(raw_cov.disease_each_employee, raw_cov.confidence),
-                disease_policy_limit=self._build_money_value(raw_cov.disease_policy_limit, raw_cov.confidence),
-                effective_date=self._build_date_value(raw_cov.effective_date, raw_cov.confidence),
-                expiration_date=self._build_date_value(raw_cov.expiration_date, raw_cov.confidence),
+                each_occurrence=self._build_field_money_value(
+                    "each_occurrence", raw_cov.each_occurrence, raw_cov.each_occurrence_evidence,
+                    ev, raw_cov.confidence, inspection.document_id, doc_type, pages_to_process,
+                ),
+                general_aggregate=self._build_field_money_value(
+                    "general_aggregate", raw_cov.general_aggregate, raw_cov.general_aggregate_evidence,
+                    ev, raw_cov.confidence, inspection.document_id, doc_type, pages_to_process,
+                ),
+                products_completed_ops=self._build_field_money_value(
+                    "products_completed_ops", raw_cov.products_completed_ops, raw_cov.products_completed_ops_evidence,
+                    ev, raw_cov.confidence, inspection.document_id, doc_type, pages_to_process,
+                ),
+                personal_adv_injury=self._build_field_money_value(
+                    "personal_adv_injury", raw_cov.personal_adv_injury, raw_cov.personal_adv_injury_evidence,
+                    ev, raw_cov.confidence, inspection.document_id, doc_type, pages_to_process,
+                ),
+                combined_single_limit=self._build_field_money_value(
+                    "combined_single_limit", raw_cov.combined_single_limit, raw_cov.combined_single_limit_evidence,
+                    ev, raw_cov.confidence, inspection.document_id, doc_type, pages_to_process,
+                ),
+                per_accident=self._build_field_money_value(
+                    "per_accident", raw_cov.per_accident, raw_cov.per_accident_evidence,
+                    ev, raw_cov.confidence, inspection.document_id, doc_type, pages_to_process,
+                ),
+                disease_each_employee=self._build_field_money_value(
+                    "disease_each_employee", raw_cov.disease_each_employee, raw_cov.disease_each_employee_evidence,
+                    ev, raw_cov.confidence, inspection.document_id, doc_type, pages_to_process,
+                ),
+                disease_policy_limit=self._build_field_money_value(
+                    "disease_policy_limit", raw_cov.disease_policy_limit, raw_cov.disease_policy_limit_evidence,
+                    ev, raw_cov.confidence, inspection.document_id, doc_type, pages_to_process,
+                ),
+                effective_date=self._build_field_date_value(
+                    "effective", raw_cov.effective_date, raw_cov.effective_date_evidence,
+                    ev, raw_cov.confidence, inspection.document_id, doc_type, pages_to_process,
+                ),
+                expiration_date=self._build_field_date_value(
+                    "expiration", raw_cov.expiration_date, raw_cov.expiration_date_evidence,
+                    ev, raw_cov.confidence, inspection.document_id, doc_type, pages_to_process,
+                ),
                 evidence=ev,
                 extraction_status=status,
             )
@@ -615,22 +917,101 @@ class ExtractionPipelineService:
                 restriction_desc = restriction_desc or f"Restrictive manuscript provision or exclusion detected: '{matched_restrictive}'"
                 verification_basis = "detected_restriction"
 
-            # Date evidence grounding verification
+            # Date evidence grounding verification via parsed dates (never digit-only substrings)
+            end_date_evidence: List[EvidenceReference] = []
+
+            def _ground_endorsement_date(parsed_d) -> Optional[EvidenceReference]:
+                if ev is not None and parsed_d in _extract_normalized_dates(ev.source_text):
+                    return ev
+                for page in pages_to_process:
+                    p_text = page.text_content or ""
+                    if parsed_d not in _extract_normalized_dates(p_text):
+                        continue
+                    for span in page.spans:
+                        if span.text and parsed_d in _extract_normalized_dates(span.text):
+                            return EvidenceReference(
+                                document_id=inspection.document_id,
+                                document_type=doc_type,
+                                page_number=page.page_number,
+                                source_text=span.text.strip(),
+                                bounding_box=span.bounding_box,
+                                ocr_provider=getattr(page, "ocr_provider", None),
+                                confidence=getattr(page, "ocr_confidence", None),
+                                processing_status="ocr_extracted" if getattr(page, "ocr_provider", None) else "native_digital",
+                            )
+                    for line in p_text.splitlines():
+                        if parsed_d in _extract_normalized_dates(line):
+                            return EvidenceReference(
+                                document_id=inspection.document_id,
+                                document_type=doc_type,
+                                page_number=page.page_number,
+                                source_text=line.strip(),
+                                ocr_provider=getattr(page, "ocr_provider", None),
+                                confidence=getattr(page, "ocr_confidence", None),
+                                processing_status="ocr_extracted" if getattr(page, "ocr_provider", None) else "native_digital",
+                            )
+                return None
+
             eff_val = self._build_date_value(raw_end.effective_date, raw_end.confidence)
-            if eff_val and raw_end.effective_date:
-                raw_digits = re.sub(r"\D", "", raw_end.effective_date)
-                doc_digits = re.sub(r"\D", "", full_doc_text)
-                if raw_digits and raw_digits not in doc_digits:
-                    # Date does not exist in source document text
+            if eff_val is not None:
+                grounded_eff = _ground_endorsement_date(eff_val.date)
+                if grounded_eff is None:
                     eff_val = None
+                elif grounded_eff not in end_date_evidence:
+                    end_date_evidence.append(grounded_eff)
 
             exp_val = self._build_date_value(raw_end.expiration_date, raw_end.confidence)
-            if exp_val and raw_end.expiration_date:
-                raw_digits = re.sub(r"\D", "", raw_end.expiration_date)
-                doc_digits = re.sub(r"\D", "", full_doc_text)
-                if raw_digits and raw_digits not in doc_digits:
-                    # Date does not exist in source document text
+            if exp_val is not None:
+                grounded_exp = _ground_endorsement_date(exp_val.date)
+                if grounded_exp is None:
                     exp_val = None
+                elif grounded_exp not in end_date_evidence:
+                    end_date_evidence.append(grounded_exp)
+
+            # Ground endorsement named_entities against verified source document text
+            verified_entity_evidence: List[EvidenceReference] = []
+            for ent_name in raw_end.named_entities:
+                if not ent_name or not ent_name.strip():
+                    continue
+                if ev is not None and _verify_entity_semantic_support(ent_name, ev.source_text):
+                    if ev not in verified_entity_evidence:
+                        verified_entity_evidence.append(ev)
+                    continue
+                for page in pages_to_process:
+                    p_text = page.text_content or ""
+                    if not _verify_entity_semantic_support(ent_name, p_text):
+                        continue
+                    matched_ref: Optional[EvidenceReference] = None
+                    for span in page.spans:
+                        if span.text and _verify_entity_semantic_support(ent_name, span.text):
+                            matched_ref = EvidenceReference(
+                                document_id=inspection.document_id,
+                                document_type=doc_type,
+                                page_number=page.page_number,
+                                source_text=span.text.strip(),
+                                bounding_box=span.bounding_box,
+                                ocr_provider=getattr(page, "ocr_provider", None),
+                                confidence=getattr(page, "ocr_confidence", None),
+                                processing_status="ocr_extracted" if getattr(page, "ocr_provider", None) else "native_digital",
+                            )
+                            break
+                    if matched_ref is None:
+                        for line in p_text.splitlines():
+                            if _verify_entity_semantic_support(ent_name, line):
+                                matched_ref = EvidenceReference(
+                                    document_id=inspection.document_id,
+                                    document_type=doc_type,
+                                    page_number=page.page_number,
+                                    source_text=line.strip(),
+                                    ocr_provider=getattr(page, "ocr_provider", None),
+                                    confidence=getattr(page, "ocr_confidence", None),
+                                    processing_status="ocr_extracted" if getattr(page, "ocr_provider", None) else "native_digital",
+                                )
+                                break
+                    if matched_ref is not None:
+                        if matched_ref not in verified_entity_evidence:
+                            verified_entity_evidence.append(matched_ref)
+                        break
 
             end = EndorsementExtraction(
                 endorsement_type=norm_end_type,
@@ -651,6 +1032,8 @@ class ExtractionPipelineService:
                 effective_date=eff_val.date if eff_val else None,
                 expiration_date=exp_val.date if exp_val else None,
                 evidence=ev,
+                date_evidence=tuple(end_date_evidence),
+                entity_evidence=tuple(verified_entity_evidence),
                 extraction_status=status,
                 confidence=raw_end.confidence,
             )
@@ -699,12 +1082,23 @@ def reconcile_cross_document_set(doc_set: ExtractedDocumentSet) -> List[str]:
     """
     new_contradictions: List[str] = []
 
-    # 1. Date reconciliation across coverages with same coverage_type
-    coverages_by_type: dict = {}
+    # 1. Date & Limit reconciliation across coverages sharing the same policy_number (or unlinked)
+    # Distinct explicit policy numbers (e.g. GL-OLD vs GL-NEW) represent separate policies rather
+    # than contradictory dates/limits on the same policy.
+    coverages_by_scope: dict = {}
     for c in doc_set.coverages:
-        coverages_by_type.setdefault(c.coverage_type, []).append(c)
+        pol_norm = re.sub(r"[\s\-/.]", "", c.policy_number.strip().upper()) if (c.policy_number and c.policy_number.strip()) else None
+        scope_key = (c.coverage_type, pol_norm)
+        coverages_by_scope.setdefault(scope_key, []).append(c)
 
-    for cov_type, cov_list in coverages_by_type.items():
+    # If any unlinked (policy_number=None) coverage exists for a coverage_type alongside others,
+    # compare across all coverages of that coverage_type.
+    types_with_unlinked = {cov_type for (cov_type, pol_norm) in coverages_by_scope if pol_norm is None}
+    for cov_type in types_with_unlinked:
+        all_for_type = [c for c in doc_set.coverages if c.coverage_type == cov_type]
+        coverages_by_scope[(cov_type, "__UNLINKED_SCOPE__")] = all_for_type
+
+    for (cov_type, _scope), cov_list in coverages_by_scope.items():
         if len(cov_list) > 1:
             eff_dates = {c.effective_date.date for c in cov_list if c.effective_date and c.effective_date.date}
             if len(eff_dates) > 1:

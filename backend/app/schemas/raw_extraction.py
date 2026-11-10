@@ -49,6 +49,18 @@ class RawCoverageSection(BaseModel):
     effective_date: Optional[str] = None
     expiration_date: Optional[str] = None
 
+    # Optional field-level evidence quotes
+    each_occurrence_evidence: Optional[RawEvidenceQuote] = None
+    general_aggregate_evidence: Optional[RawEvidenceQuote] = None
+    products_completed_ops_evidence: Optional[RawEvidenceQuote] = None
+    personal_adv_injury_evidence: Optional[RawEvidenceQuote] = None
+    combined_single_limit_evidence: Optional[RawEvidenceQuote] = None
+    per_accident_evidence: Optional[RawEvidenceQuote] = None
+    disease_each_employee_evidence: Optional[RawEvidenceQuote] = None
+    disease_policy_limit_evidence: Optional[RawEvidenceQuote] = None
+    effective_date_evidence: Optional[RawEvidenceQuote] = None
+    expiration_date_evidence: Optional[RawEvidenceQuote] = None
+
     evidence: Optional[RawEvidenceQuote] = None
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 

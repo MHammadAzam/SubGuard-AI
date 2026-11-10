@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 from uuid import UUID, uuid4
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ============================================================================
@@ -84,6 +84,7 @@ class RequirementType(str, Enum):
     NAMED_INSURED = "named_insured"
     ENDORSEMENT_PRESENCE = "endorsement_presence"
     COMPLETE_DOCUMENT_SET = "complete_document_set"
+    CONTRACTUAL_DURATION = "contractual_duration"
 
 
 class LimitField(str, Enum):
@@ -104,6 +105,8 @@ class LimitField(str, Enum):
 
 class BoundingBox(BaseModel):
     """Normalized coordinates [0.0, 1.0] relative to page dimensions."""
+    model_config = ConfigDict(frozen=True)
+
     x: float = Field(ge=0.0, le=1.0)
     y: float = Field(ge=0.0, le=1.0)
     width: float = Field(ge=0.0, le=1.0)
@@ -112,6 +115,8 @@ class BoundingBox(BaseModel):
 
 class EvidenceReference(BaseModel):
     """Traceable pointer to the source document location."""
+    model_config = ConfigDict(frozen=True)
+
     document_id: str
     document_type: DocumentType = DocumentType.COI
     page_number: int = Field(ge=1, description="1-indexed source page")
@@ -222,6 +227,10 @@ class EndorsementExtraction(BaseModel):
         description="Specific reason code for detected limitation or restriction"
     )
     evidence: Optional[EvidenceReference] = None
+    date_evidence: Tuple[EvidenceReference, ...] = Field(
+        default_factory=tuple,
+        description="Evidence references supporting endorsement dates"
+    )
     extraction_status: ExtractionStatus = ExtractionStatus.EXTRACTED
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
@@ -239,6 +248,10 @@ class ExtractedDocumentSet(BaseModel):
     coverages: List[CoverageExtraction] = Field(default_factory=list)
     endorsements: List[EndorsementExtraction] = Field(default_factory=list)
     raw_contradictions_detected: List[str] = Field(default_factory=list)
+    reconciliation_result: Optional[Any] = Field(
+        default=None,
+        description="Immutable cross-document reconciliation result (CrossDocumentReconciliationResult)"
+    )
 
 
 # ============================================================================
@@ -259,6 +272,19 @@ class InsuranceRequirement(BaseModel):
     require_exact_name_match: bool = False
     require_separate_endorsement_document: bool = True
     mandatory_evidence: bool = True
+    # Contractual duration fields (WP3)
+    required_coverage_end_date: Optional[date] = Field(
+        default=None,
+        description="Explicit contractual deadline / end date through which coverage or endorsement must remain active",
+    )
+    requires_coverage_through_policy_expiration: bool = Field(
+        default=False,
+        description="Whether coverage or endorsement must remain active through the underlying policy expiration date",
+    )
+    is_duration_requirement_validated: bool = Field(
+        default=True,
+        description="Whether the contractual duration requirement has been legally and contractually validated",
+    )
 
     @model_validator(mode="after")
     def validate_requirement_fields(self) -> InsuranceRequirement:
@@ -271,6 +297,11 @@ class InsuranceRequirement(BaseModel):
         elif self.rule_type == RequirementType.ENDORSEMENT_PRESENCE:
             if not self.required_endorsement_type:
                 raise ValueError("ENDORSEMENT_PRESENCE requires required_endorsement_type")
+        elif self.rule_type == RequirementType.CONTRACTUAL_DURATION:
+            if not self.coverage_type and not self.required_endorsement_type:
+                raise ValueError("CONTRACTUAL_DURATION requires coverage_type or required_endorsement_type")
+            if self.required_coverage_end_date is None and not self.requires_coverage_through_policy_expiration:
+                raise ValueError("CONTRACTUAL_DURATION requires required_coverage_end_date or requires_coverage_through_policy_expiration")
         return self
 
 

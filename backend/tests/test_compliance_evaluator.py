@@ -14,6 +14,8 @@ import unittest
 from datetime import date
 
 from app.compliance.evaluator import ComplianceEvaluator, compare_entity_names
+from app.compliance.reconciliation import reconcile_dates
+from app.schemas.reconciliation import DiscrepancyCategory
 from app.schemas.insurance import (
     ComplianceStatus,
     CoverageExtraction,

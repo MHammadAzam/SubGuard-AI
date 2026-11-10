@@ -587,6 +587,22 @@ def evaluate_policy_expiration(
             found_value={"expiration_date": exp_date_obj.date.isoformat()},
             evidence=evidence_list,
         )
+    elif req.required_coverage_end_date and exp_date_obj.date < req.required_coverage_end_date:
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.NON_COMPLIANT,
+            severity=req.severity,
+            reason_code="POLICY_PREMATURE_EXPIRATION",
+            explanation=(
+                f"{req.coverage_type.value} policy expires on {exp_date_obj.date.isoformat()}, "
+                f"which precedes the contractual requirement deadline ({req.required_coverage_end_date.isoformat()})."
+            ),
+            requires_human_review=True,
+            required_value={"required_coverage_end_date": req.required_coverage_end_date.isoformat()},
+            found_value={"expiration_date": exp_date_obj.date.isoformat()},
+            evidence=evidence_list,
+        )
     else:
         return ComplianceFinding(
             requirement_id=req.requirement_id,
@@ -993,6 +1009,7 @@ def is_recognized_standard_form(form_number: Optional[str]) -> bool:
 def evaluate_endorsement_presence(
     req: InsuranceRequirement,
     doc_set: ExtractedDocumentSet,
+    evaluation_date: Optional[date] = None,
 ) -> ComplianceFinding:
     """Evaluate whether a required endorsement is supported by extracted document evidence."""
     matching_endorsements = [
@@ -1366,6 +1383,183 @@ def evaluate_endorsement_presence(
 
     primary_form = all_form_numbers[0] if all_form_numbers else "Standard"
 
+    # 10. Contractual Duration & Endorsement Date Alignment (WP3)
+    if req.required_coverage_end_date is not None or req.requires_coverage_through_policy_expiration:
+        if not req.is_duration_requirement_validated:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+                severity=Severity.MAJOR,
+                reason_code="UNVALIDATED_DURATION_REQUIREMENT",
+                explanation="Contractual duration requirement has not been validated. Human review required.",
+                requires_human_review=True,
+                required_value={"is_duration_requirement_validated": True},
+                found_value=None,
+                evidence=evidence_list,
+            )
+
+        target_end_date = req.required_coverage_end_date
+        underlying_policy_cov = None
+        for c in doc_set.coverages:
+            if req.coverage_type and c.coverage_type == req.coverage_type:
+                underlying_policy_cov = c
+                break
+        if underlying_policy_cov is None and doc_set.coverages:
+            underlying_policy_cov = doc_set.coverages[0]
+
+        if req.requires_coverage_through_policy_expiration:
+            if underlying_policy_cov and underlying_policy_cov.expiration_date:
+                policy_exp = underlying_policy_cov.expiration_date.date
+                target_end_date = max(target_end_date, policy_exp) if target_end_date else policy_exp
+            elif target_end_date is None:
+                return ComplianceFinding(
+                    requirement_id=req.requirement_id,
+                    rule_type=req.rule_type,
+                    status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+                    severity=req.severity,
+                    reason_code="POLICY_EXPIRATION_UNKNOWN_FOR_DURATION",
+                    explanation="Coverage through policy expiration was required, but underlying policy expiration date is missing.",
+                    requires_human_review=True,
+                    required_value={"requires_coverage_through_policy_expiration": True},
+                    found_value=None,
+                    evidence=evidence_list,
+                )
+
+        dated_endorsements = [
+            e for e in valid_endorsements
+            if e.effective_date is not None and e.expiration_date is not None
+        ]
+        if not dated_endorsements:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.MISSING_EVIDENCE,
+                severity=req.severity,
+                reason_code="ENDORSEMENT_DATES_MISSING",
+                explanation=(
+                    f"Contract requires {req.required_endorsement_type.value} endorsement coverage through "
+                    f"{target_end_date.isoformat() if target_end_date else 'required period'}, but the endorsement "
+                    "document lacks verified effective or expiration dates. Policy dates cannot be inferred to establish endorsement duration."
+                ),
+                requires_human_review=True,
+                required_value={"required_coverage_end_date": target_end_date.isoformat() if target_end_date else None},
+                found_value={"endorsement_dates": None},
+                evidence=evidence_list,
+            )
+
+        primary_end = dated_endorsements[0]
+        from app.compliance.reconciliation import _evidence_supports_date
+
+        end_evidence: List[EvidenceReference] = []
+        if getattr(primary_end, "date_evidence", None):
+            end_evidence.extend(primary_end.date_evidence)
+        if primary_end.evidence:
+            end_evidence.append(primary_end.evidence)
+        end_evidence_tuple = tuple(end_evidence)
+        end_doc_id = end_evidence[0].document_id if end_evidence else None
+
+        eff_supported = _evidence_supports_date(primary_end.effective_date, end_evidence_tuple, date_field="effective", doc_id=end_doc_id)
+        exp_supported = _evidence_supports_date(primary_end.expiration_date, end_evidence_tuple, date_field="expiration", doc_id=end_doc_id)
+
+        if not eff_supported or not exp_supported:
+            unsupported_field = "effective and expiration dates" if (not eff_supported and not exp_supported) else ("effective date" if not eff_supported else "expiration date")
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.REQUIRES_HUMAN_REVIEW,
+                severity=req.severity,
+                reason_code="ENDORSEMENT_DATE_EVIDENCE_UNSUPPORTED",
+                explanation=(
+                    f"{req.required_endorsement_type.value} endorsement {unsupported_field} is not semantically supported "
+                    "by cited document evidence. Human review required."
+                ),
+                requires_human_review=True,
+                required_value={"required_coverage_end_date": target_end_date.isoformat() if target_end_date else None},
+                found_value={
+                    "effective_date": primary_end.effective_date.isoformat() if primary_end.effective_date else None,
+                    "expiration_date": primary_end.expiration_date.isoformat() if primary_end.expiration_date else None,
+                },
+                evidence=end_evidence,
+            )
+
+        if primary_end.effective_date > primary_end.expiration_date:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.NON_COMPLIANT,
+                severity=Severity.CRITICAL,
+                reason_code="INVALID_DATE_RANGE_INVERTED",
+                explanation=f"{req.required_endorsement_type.value} effective date ({primary_end.effective_date}) is after expiration date ({primary_end.expiration_date}).",
+                requires_human_review=True,
+                required_value=None,
+                found_value={"effective_date": primary_end.effective_date.isoformat(), "expiration_date": primary_end.expiration_date.isoformat()},
+                evidence=end_evidence,
+            )
+
+        if evaluation_date is not None:
+            if primary_end.effective_date > evaluation_date:
+                return ComplianceFinding(
+                    requirement_id=req.requirement_id,
+                    rule_type=req.rule_type,
+                    status=ComplianceStatus.NON_COMPLIANT,
+                    severity=Severity.MAJOR,
+                    reason_code="ENDORSEMENT_FUTURE_INCEPTION",
+                    explanation=f"{req.required_endorsement_type.value} endorsement inception date ({primary_end.effective_date.isoformat()}) is in the future relative to evaluation date ({evaluation_date.isoformat()}).",
+                    requires_human_review=True,
+                    required_value={"evaluation_date": evaluation_date.isoformat()},
+                    found_value={"effective_date": primary_end.effective_date.isoformat()},
+                    evidence=end_evidence,
+                )
+            if primary_end.expiration_date < evaluation_date:
+                return ComplianceFinding(
+                    requirement_id=req.requirement_id,
+                    rule_type=req.rule_type,
+                    status=ComplianceStatus.NON_COMPLIANT,
+                    severity=Severity.CRITICAL,
+                    reason_code="ENDORSEMENT_EXPIRED",
+                    explanation=f"{req.required_endorsement_type.value} endorsement expired on {primary_end.expiration_date.isoformat()} (evaluation date: {evaluation_date.isoformat()}).",
+                    requires_human_review=True,
+                    required_value={"evaluation_date": evaluation_date.isoformat()},
+                    found_value={"expiration_date": primary_end.expiration_date.isoformat()},
+                    evidence=end_evidence,
+                )
+
+        if target_end_date is not None and primary_end.expiration_date < target_end_date:
+            return ComplianceFinding(
+                requirement_id=req.requirement_id,
+                rule_type=req.rule_type,
+                status=ComplianceStatus.NON_COMPLIANT,
+                severity=req.severity,
+                reason_code="ENDORSEMENT_PREMATURE_EXPIRATION",
+                explanation=(
+                    f"{req.required_endorsement_type.value} endorsement expires on {primary_end.expiration_date.isoformat()}, "
+                    f"which precedes the contractual requirement deadline ({target_end_date.isoformat()})."
+                ),
+                requires_human_review=True,
+                required_value={"required_coverage_end_date": target_end_date.isoformat()},
+                found_value={"endorsement_expiration_date": primary_end.expiration_date.isoformat()},
+                evidence=end_evidence,
+            )
+
+        if req.requires_coverage_through_policy_expiration and underlying_policy_cov and underlying_policy_cov.expiration_date:
+            if primary_end.expiration_date < underlying_policy_cov.expiration_date.date:
+                return ComplianceFinding(
+                    requirement_id=req.requirement_id,
+                    rule_type=req.rule_type,
+                    status=ComplianceStatus.NON_COMPLIANT,
+                    severity=req.severity,
+                    reason_code="ENDORSEMENT_PREMATURE_EXPIRATION",
+                    explanation=(
+                        f"{req.required_endorsement_type.value} endorsement expires on {primary_end.expiration_date.isoformat()}, "
+                        f"which precedes the underlying policy expiration date ({underlying_policy_cov.expiration_date.date.isoformat()})."
+                    ),
+                    requires_human_review=True,
+                    required_value={"policy_expiration_date": underlying_policy_cov.expiration_date.date.isoformat()},
+                    found_value={"endorsement_expiration_date": primary_end.expiration_date.isoformat()},
+                    evidence=end_evidence,
+                )
+
     return ComplianceFinding(
         requirement_id=req.requirement_id,
         rule_type=req.rule_type,
@@ -1385,6 +1579,31 @@ def evaluate_endorsement_presence(
         },
         evidence=evidence_list,
     )
+
+
+def evaluate_contractual_duration(
+    req: InsuranceRequirement,
+    doc_set: ExtractedDocumentSet,
+    evaluation_date: Optional[date] = None,
+) -> ComplianceFinding:
+    """Evaluate contractual duration requirement for coverage or endorsement."""
+    if req.required_endorsement_type:
+        return evaluate_endorsement_presence(req, doc_set, evaluation_date)
+    elif req.coverage_type:
+        return evaluate_policy_expiration(req, doc_set, evaluation_date or date.today())
+    else:
+        return ComplianceFinding(
+            requirement_id=req.requirement_id,
+            rule_type=req.rule_type,
+            status=ComplianceStatus.UNABLE_TO_DETERMINE,
+            severity=req.severity,
+            reason_code="INCOMPLETE_DURATION_REQUIREMENT_TERMS",
+            explanation="Contractual duration requirement must specify either coverage_type or required_endorsement_type.",
+            requires_human_review=True,
+            required_value=None,
+            found_value=None,
+            evidence=[],
+        )
 
 
 # ============================================================================
@@ -1425,7 +1644,9 @@ class ComplianceEvaluator:
             elif req.rule_type == RequirementType.NAMED_INSURED:
                 finding = evaluate_named_insured(req, document_set)
             elif req.rule_type == RequirementType.ENDORSEMENT_PRESENCE:
-                finding = evaluate_endorsement_presence(req, document_set)
+                finding = evaluate_endorsement_presence(req, document_set, evaluation_date)
+            elif req.rule_type == RequirementType.CONTRACTUAL_DURATION:
+                finding = evaluate_contractual_duration(req, document_set, evaluation_date)
             else:
                 finding = ComplianceFinding(
                     requirement_id=req.requirement_id,

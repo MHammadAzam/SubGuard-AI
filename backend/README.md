@@ -133,46 +133,86 @@ python -m evaluation.runners.benchmark --provider openrouter --model nvidia/nemo
 
 ## Running Tests
 
-The test suite requires Python 3.12+, Pydantic v2, PyMuPDF, google-genai, and openai. Run all 185 automated tests using standard library `unittest`:
+Install dev dependencies (`pytest`, `httpx`, `playwright`) cleanly, then run tests against isolated temp databases:
 
 ```bash
 cd backend
-python -m unittest discover -s tests -p "test_*.py" -v
+pytest tests --ignore=tests/test_browser_workflow_acceptance.py -q
 ```
 
 ---
 
-## Phase 6 Hardening: Evidence Integrity & Evaluation Reliability
+## Pilot Configuration, Security & Operations
 
-### 1. Evidence Verification Strategy
-- **Elimination of Single-Bigram Matches:** Fabricated quotations can no longer achieve verified evidence status merely by sharing a single 2-word bigram (e.g. `"liability insurance"`) with the document page.
-- **Calibrated Sequence Matching:** Quotations must match normalized continuous text or page spans. Short quotes ($\le 3$ tokens) must match as an exact continuous sequence. Longer quotes ($\ge 4$ tokens) require at least a 4-token contiguous sequence matching the page text.
-- **Ambiguous Quotations:** Quotes that fail verbatim or calibrated sequence matching are rejected (`_resolve_evidence()` returns `None`), defaulting extraction status to `ExtractionStatus.UNCERTAIN` and routing findings to `MISSING_EVIDENCE` or `UNABLE_TO_DETERMINE`.
+### 1. Clean Installation & Environment Configuration
 
-### 2. Semantic Support Rules
-- **Rejection of Standalone Generic Tokens:** Standalone words such as `"insured"`, `"additional"`, and `"primary"` are removed from endorsement semantic verification heuristics. An endorsement claim citing `"INSURED: [Contractor Name]"` is strictly flagged as `QUOTE_PRESENT_UNVERIFIED_SUPPORT`.
-- **Endorsement-Specific Indicators:** Endorsements require recognized form identifiers (e.g. `CG 20 10`, `CG 24 04`) or specific multi-word indicators (e.g. `"additional insured"`, `"scheduled person"`, `"waiver of subrogation"`, `"primary and noncontributory"`).
-
-### 3. Incomplete Document-Set Symmetry
-- **Coverage & Policy Date Symmetry:** When `is_document_set_complete=False`, missing coverages or missing policy dates return `ComplianceStatus.UNABLE_TO_DETERMINE` with reason code `INCOMPLETE_DOCUMENT_SET_COVERAGE_UNKNOWN`, rather than prematurely declaring non-compliance.
-- **Complete Sets Preserved:** When `is_document_set_complete=True`, genuinely missing coverages continue to return `ComplianceStatus.MISSING_EVIDENCE` with reason code `COVERAGE_NOT_FOUND`.
-
-### 4. Multiple Endorsement Aggregation Policy
-- **Comprehensive Evaluation:** The evaluator evaluates *all* matching endorsement records rather than silently picking the first record.
-- **Uncertainty & Conflict Propagation:** If *any* matching endorsement has unverified evidence support (`QUOTE_PRESENT_UNVERIFIED_SUPPORT`), partial extraction (`PARTIAL`), low confidence / uncertainty (`CONFIDENCE_LOW`), or conflicting policy numbers (`CONTRADICTORY_ENDORSEMENTS_FOUND`), the finding deterministically escalates to `REQUIRES_HUMAN_REVIEW` or `UNABLE_TO_DETERMINE`.
-- **Blanket Requirement:** If any matching endorsement is blanket, `BLANKET_ENDORSEMENT_REQUIRES_CONTRACT_CHECK` is enforced.
-
-### 5. Partial Extraction Protection
-- Incomplete extraction objects flagged with `ExtractionStatus.PARTIAL` across coverage limits, expiration dates, effective dates, named insured, or endorsements deterministically route to `ComplianceStatus.REQUIRES_HUMAN_REVIEW` with dedicated reason codes (`COVERAGE_PARTIAL_EXTRACTION`, `NAMED_INSURED_PARTIAL_EXTRACTION`, etc.), preventing incomplete records from silently becoming `COMPLIANT`.
-
----
-
-## Running the API Server (Optional)
-
-To start the minimal local development API:
+Requires Python `3.12+` and local **Tesseract OCR** (`TESSERACT_CMD` env var or standard install path).
 
 ```bash
 cd backend
-python -m uvicorn app.main:app --reload --port 8000
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e . -c requirements.lock
+# Optional dev/test tools: pip install -e ".[dev]" -c requirements.lock
+# Optional external extraction SDKs: pip install -e ".[providers]" -c requirements.lock
 ```
-Interactive Swagger documentation: `http://localhost:8000/docs`.
+
+Copy `.env.example` and configure before running in production (`SUBGUARD_ENV=production`):
+- `SUBGUARD_SESSION_SECRET`: Mandatory `>= 32` random non-placeholder characters in production.
+- `SUBGUARD_DB_PATH` & `SUBGUARD_UPLOAD_DIR`: Explicit persistent filesystem locations.
+- `SUBGUARD_AUDIT_LOG_PATH`: Optional path for `RotatingFileHandler` `INFO` JSON security logs (`subguard.security`).
+- `SUBGUARD_TRUSTED_PROXIES` / `SUBGUARD_CORS_ORIGINS`: Set only explicit proxy IPs and allowed origins.
+
+### 2. Administrator Bootstrap & Session Hygiene
+
+There are no default passwords or public self-registration. Provision accounts explicitly:
+
+```bash
+cd backend
+python -m app.security.bootstrap create-admin --username pilot_admin --display-name "Pilot Admin"
+# Or purge expired/revoked sessions:
+python -m app.security.bootstrap purge-sessions
+```
+
+### 3. Provider Safety Allowlist (`SUBGUARD_ALLOWED_PROVIDERS`)
+
+- Server defaults strictly to `SUBGUARD_ALLOWED_PROVIDERS=mock`.
+- Upload requests naming disabled providers (`gemini`, `openrouter`) are rejected with `HTTP 403` before files are read or processed.
+- Never silently falls back to paid providers.
+
+### 4. Resource Limits & Single-Worker Requirement
+
+Defaults sized conservatively for an 8 GB host:
+- `SUBGUARD_MAX_FILE_BYTES`: `15 MiB` per PDF (`MAX_PDF_SIZE_BYTES`)
+- `SUBGUARD_MAX_ENDORSEMENT_FILES`: `10` per submission
+- `SUBGUARD_MAX_CUMULATIVE_UPLOAD_BYTES`: `50 MiB` per submission
+- `SUBGUARD_MAX_CONCURRENT_REVIEWS`: `2` simultaneous document processing pipelines (offloaded off asyncio event loop)
+- `SUBGUARD_MAX_CONCURRENT_SCRYPT`: `4` concurrent `scrypt` (`N=131072, r=8, p=1`) verifications
+- `SUBGUARD_MAX_PROVIDER_IMAGES`: `12` PNG pages / `SUBGUARD_MAX_PROVIDER_PAYLOAD_BYTES`: `12 MiB`
+
+Rate limiters and concurrency gates use process-local memory; run a single Uvicorn worker (`--workers 1`) behind a TLS-terminating reverse proxy.
+
+### 5. Online SQLite Backup, Integrity Check, and Staged Restore
+
+Never copy running `-wal` SQLite `.db` files directly. Use the operational backup CLI:
+
+```bash
+cd backend
+# Consistent online snapshot via sqlite3.Connection.backup() + upload SHA-256 manifest
+python -m app.persistence.backup backup --output-dir D:\Backups\SubGuard
+
+# Verify DB integrity, foreign keys, document rows, and manifest checksums
+python -m app.persistence.backup verify --manifest D:\Backups\SubGuard\<backup_name>\manifest.json
+
+# Restore cleanly to an explicit empty target (STOP the running server before swapping live data!)
+python -m app.persistence.backup restore --backup-dir D:\Backups\SubGuard\<backup_name> --target-db-path D:\Restore\subguard.db --target-upload-dir D:\Restore\uploads
+```
+
+### 6. Running the Server
+
+```bash
+cd backend
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Public `/health` exposes minimal liveness only; authenticated `admin` accounts can inspect `GET /api/v1/admin/system-health` for SQLite connectivity and upload-storage writability. Interactive OpenAPI `/docs` and `/openapi.json` are disabled (`404`) when `SUBGUARD_ENV=production`.

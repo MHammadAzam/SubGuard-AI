@@ -13,8 +13,11 @@ Verifies:
 
 from __future__ import annotations
 
+import html
 import io
 import json
+import os
+import re
 import sqlite3
 import sys
 import time
@@ -23,8 +26,39 @@ from typing import Any, Dict
 
 import httpx
 
-SERVER_URL = "http://127.0.0.1:8000"
+SERVER_URL = os.getenv("SUBGUARD_VERIFY_URL", "http://127.0.0.1:8000")
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "evaluation" / "fixtures" / "pdfs"
+
+
+def _authenticate(client: httpx.Client) -> str:
+    username = os.getenv("SUBGUARD_VERIFY_USERNAME", "").strip()
+    password = os.getenv("SUBGUARD_VERIFY_PASSWORD", "")
+    if not username or not password:
+        raise RuntimeError(
+            "Set SUBGUARD_VERIFY_USERNAME and SUBGUARD_VERIFY_PASSWORD before running verify_milestone2_workflow.py."
+        )
+    login_page = client.get("/login")
+    assert login_page.status_code == 200, f"Expected GET /login 200, got {login_page.status_code}"
+    m = re.search(r'name="csrf_token"\s+value="([^"]+)"', login_page.text)
+    assert m, "Login CSRF token missing"
+    login_csrf = html.unescape(m.group(1))
+    res = client.post(
+        "/login",
+        data={
+            "username": username,
+            "password": password,
+            "csrf_token": login_csrf,
+            "next": "/dashboard",
+        },
+        follow_redirects=True,
+    )
+    assert res.status_code == 200, f"Login failed with HTTP {res.status_code}"
+    meta = re.search(r'<meta\s+name="csrf-token"\s+content="([^"]+)"', res.text)
+    assert meta, "Authenticated CSRF meta token missing"
+    client.headers["X-CSRF-Token"] = html.unescape(meta.group(1))
+    me = client.get("/api/v1/auth/me")
+    assert me.status_code == 200
+    return me.json()["display_name"]
 
 
 def run_checks():
@@ -39,6 +73,9 @@ def run_checks():
     assert r.status_code == 200, f"Expected 200, got {r.status_code}"
     assert r.json() == {"status": "ok", "service": "compliance-evaluator"}
     print("[PASS] Health endpoint OK: 200")
+
+    expected_reviewer_name = _authenticate(client)
+    print(f"[PASS] Authenticated session established as '{expected_reviewer_name}'")
 
     # -------------------------------------------------------------------------
     # 2. Inspect All 6 Web UI Pages
@@ -127,10 +164,10 @@ def run_checks():
     assert r_rev_post.status_code == 200
     print("[PASS] Human review decision recorded successfully.")
 
-    # Verify Detail Page reflects review action
+    # Verify Detail Page reflects review action (server-derived reviewer identity)
     r_detail_updated = client.get(f"/submissions/{sub_id}")
     assert r_detail_updated.status_code == 200
-    assert "Senior Compliance Auditor" in r_detail_updated.text
+    assert expected_reviewer_name in r_detail_updated.text
     assert "Exception approved by Project Director" in r_detail_updated.text
     assert "compliant" in r_detail_updated.text.lower()
     print("[PASS] Submission detail displays recorded audit history.")

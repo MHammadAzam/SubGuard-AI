@@ -29,6 +29,7 @@ from app.extraction.providers.base import (
 )
 from app.schemas.pdf import PDFPageInspection
 from app.schemas.raw_extraction import RawInsuranceExtraction
+from app.security.config import get_max_provider_images, get_max_provider_payload_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -496,7 +497,7 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
         return False
 
     def _build_user_content(self, pages: List[PDFPageInspection]) -> Union[str, List[Dict[str, Any]]]:
-        """Assemble user message content.
+        """Assemble user message content within configured image and byte caps (never truncating).
         
         When raster images are present, returns a multimodal content array with text
         and base64 image_url objects.
@@ -506,11 +507,15 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
         content_parts: List[Dict[str, Any]] = []
         text_parts: List[str] = []
         image_count = 0
+        total_bytes = 0
+        max_images = get_max_provider_images()
+        max_payload_bytes = get_max_provider_payload_bytes()
 
         for p in pages:
             page_text = p.text_content or "(No text layer found on this page)"
             header = f"=== PAGE {p.page_number} (Dimensions: {p.width_pts}x{p.height_pts} pt) ===\n"
             full_page_str = header + page_text
+            total_bytes += len(full_page_str.encode("utf-8", errors="ignore"))
             text_parts.append(full_page_str)
             content_parts.append({
                 "type": "text",
@@ -519,6 +524,24 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
 
             image_data = getattr(p, "rendered_image_png", None) or getattr(p, "image_bytes", None)
             if image_data:
+                image_count += 1
+                total_bytes += len(image_data)
+                if image_count > max_images:
+                    raise ExtractionInvalidRequestError(
+                        f"Submission contains {image_count} page images exceeding configured limit ({max_images}). "
+                        "Submit a smaller document batch or route for manual review.",
+                        provider_name=self.provider_name,
+                        status_code=400,
+                        error_code="payload_image_limit_exceeded",
+                    )
+                if total_bytes > max_payload_bytes:
+                    raise ExtractionInvalidRequestError(
+                        f"Extraction payload ({total_bytes:,} bytes) exceeds limit ({max_payload_bytes:,} bytes). "
+                        "Submit a smaller document batch or route for manual review.",
+                        provider_name=self.provider_name,
+                        status_code=400,
+                        error_code="payload_size_limit_exceeded",
+                    )
                 try:
                     b64_img = base64.b64encode(image_data).decode("utf-8")
                     content_parts.append({
@@ -527,9 +550,17 @@ class OpenRouterExtractionProvider(BaseExtractionProvider):
                             "url": f"data:image/png;base64,{b64_img}",
                         },
                     })
-                    image_count += 1
                 except Exception as img_err:
                     logger.warning("Failed to encode image for page %d: %s", p.page_number, img_err)
+
+        if total_bytes > max_payload_bytes:
+            raise ExtractionInvalidRequestError(
+                f"Extraction payload ({total_bytes:,} bytes) exceeds limit ({max_payload_bytes:,} bytes). "
+                "Submit a smaller document batch or route for manual review.",
+                provider_name=self.provider_name,
+                status_code=400,
+                error_code="payload_size_limit_exceeded",
+            )
 
         if image_count > 0:
             logger.info("OpenRouter payload constructed with %d pages and %d raster images.", len(pages), image_count)

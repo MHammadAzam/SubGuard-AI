@@ -15,12 +15,17 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import threading
+import time
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from uuid import uuid4
 
 from fastapi import UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from app.compliance.evaluator import ComplianceEvaluator
 from app.compliance.reconciliation import reconcile_extracted_document_set
@@ -50,11 +55,95 @@ from app.schemas.insurance import (
     validate_requirement_profile,
 )
 from app.schemas.pdf import DocumentProcessingStatus, PDFDocumentInspection
+from app.security.config import (
+    get_max_concurrent_processing,
+    get_max_cumulative_upload_bytes,
+    get_max_endorsement_files,
+    get_max_upload_file_bytes,
+    validate_requested_provider,
+)
 
 
 # Safe upload directory
 DEFAULT_UPLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "uploads"
-MAX_UPLOAD_SIZE = 15 * 1024 * 1024  # 15 MB per file
+MAX_UPLOAD_SIZE = 15 * 1024 * 1024  # 15 MiB per file (aligned with processor MAX_PDF_SIZE_BYTES)
+UPLOAD_READ_CHUNK_BYTES = 64 * 1024
+
+
+class ProcessingConcurrencyLimitError(RuntimeError):
+    """Raised when concurrent document processing slots are saturated."""
+
+
+class _BoundedProcessingGate:
+    """Caps concurrent heavy PDF/OCR/extraction executions to protect 8 GB host memory/CPU."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = 0
+        self._cond = threading.Condition(self._lock)
+
+    def _timeout_seconds(self) -> float:
+        raw = os.getenv("SUBGUARD_PROCESSING_WAIT_SECONDS", "5.0").strip()
+        return max(0.01, float(raw))
+
+    @contextmanager
+    def acquire(self) -> Iterator[None]:
+        limit = get_max_concurrent_processing()
+        timeout = self._timeout_seconds()
+        deadline = None
+        with self._cond:
+            while self._active >= limit:
+                if deadline is None:
+                    deadline = time.monotonic() + timeout
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ProcessingConcurrencyLimitError(
+                        "Document processing queue is busy; please retry shortly."
+                    )
+                self._cond.wait(timeout=remaining)
+                limit = get_max_concurrent_processing()
+            self._active += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._active -= 1
+                self._cond.notify()
+
+
+_processing_gate = _BoundedProcessingGate()
+
+
+async def _read_bounded_upload(
+    upload_file: UploadFile,
+    *,
+    max_file_bytes: int,
+    default_name: str,
+) -> Tuple[bytes, str]:
+    """Read an UploadFile once in bounded chunks without double-buffering oversized payloads."""
+    original_filename = upload_file.filename or default_name
+    chunks: List[bytes] = []
+    total = 0
+
+    while True:
+        chunk = await upload_file.read(UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        if total == 0 and not chunk.startswith(b"%PDF"):
+            raise ValueError(
+                f"Uploaded file '{original_filename}' is not a valid PDF document (missing %PDF magic header)."
+            )
+        total += len(chunk)
+        if total > max_file_bytes:
+            raise ValueError(
+                f"Uploaded file '{original_filename}' exceeds limit of {max_file_bytes:,} bytes."
+            )
+        chunks.append(chunk)
+
+    if total == 0:
+        raise ValueError(f"Uploaded file '{original_filename}' is empty (0 bytes).")
+
+    return b"".join(chunks), original_filename
 
 
 def get_upload_dir() -> Path:
@@ -133,9 +222,11 @@ class DocumentReviewService:
         pdf_processor: Optional[PDFProcessor] = None,
         ocr_provider: Optional[BaseOCRProvider] = None,
     ):
-        init_db()
         self.repository = repository or SubmissionRepository()
-        self.pdf_processor = pdf_processor or PDFProcessor()
+        init_db(self.repository.db_path)
+        self.pdf_processor = pdf_processor or PDFProcessor(
+            max_pdf_size_bytes=get_max_upload_file_bytes()
+        )
         self.ocr_provider = ocr_provider
         self.evaluator = ComplianceEvaluator()
 
@@ -176,6 +267,23 @@ class DocumentReviewService:
         target_path.write_bytes(content)
         return content, target_path, original_filename
 
+    def _write_validated_pdf(
+        self,
+        content: bytes,
+        original_filename: str,
+        destination_dir: Path,
+        doc_id: str,
+    ) -> Path:
+        """Write validated PDF bytes to a confined submission directory cleanly."""
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        sanitized_name = _sanitize_filename(original_filename)
+        safe_filename = f"{doc_id}_{sanitized_name}"
+        target_path = destination_dir / safe_filename
+        if not target_path.resolve().is_relative_to(destination_dir.resolve()):
+            raise ValueError(f"Illegal path traversal detected in filename: '{original_filename}'")
+        target_path.write_bytes(content)
+        return target_path
+
     async def process_and_review(
         self,
         coi_file: UploadFile,
@@ -186,39 +294,26 @@ class DocumentReviewService:
         subcontractor_id: Optional[str] = None,
         provider_name: str = "mock",
     ) -> Dict[str, Any]:
-        """Execute full review workflow: upload -> extraction -> deterministic compliance -> SQLite persistence."""
-        # 0. Defensive input validation before starting pipeline
+        """Validate uploads & provider allowlist, then offload heavy sync processing off event loop."""
+        # 0. Server-side provider allowlist validation BEFORE reading or processing files
+        validated_provider = validate_requested_provider(provider_name)
+
         if not coi_file:
             raise ValueError("COI file is required.")
 
-        coi_pre_bytes = await coi_file.read()
-        if not coi_pre_bytes:
-            raise ValueError(f"Uploaded file '{coi_file.filename or 'coi.pdf'}' is empty (0 bytes).")
-        if len(coi_pre_bytes) > MAX_UPLOAD_SIZE:
-            raise ValueError(f"Uploaded file '{coi_file.filename or 'coi.pdf'}' exceeds limit of {MAX_UPLOAD_SIZE:,} bytes.")
-        if not coi_pre_bytes.startswith(b"%PDF"):
-            raise ValueError(f"Uploaded file '{coi_file.filename or 'coi.pdf'}' is not a valid PDF document (missing %PDF magic header).")
-        await coi_file.seek(0)
+        active_endorsements = [
+            ef for ef in (endorsement_files or []) if ef and getattr(ef, "filename", None)
+        ]
+        max_endorsements = get_max_endorsement_files()
+        if len(active_endorsements) > max_endorsements:
+            raise ValueError(
+                f"Too many endorsement files ({len(active_endorsements)}). Maximum allowed per submission is {max_endorsements}."
+            )
 
-        for end_file in endorsement_files:
-            if end_file and getattr(end_file, "filename", None):
-                end_pre_bytes = await end_file.read()
-                if not end_pre_bytes:
-                    raise ValueError(f"Uploaded file '{end_file.filename}' is empty (0 bytes).")
-                if len(end_pre_bytes) > MAX_UPLOAD_SIZE:
-                    raise ValueError(f"Uploaded file '{end_file.filename}' exceeds limit of {MAX_UPLOAD_SIZE:,} bytes.")
-                if not end_pre_bytes.startswith(b"%PDF"):
-                    raise ValueError(f"Uploaded file '{end_file.filename}' is not a valid PDF document (missing %PDF magic header).")
-                await end_file.seek(0)
+        max_file_bytes = get_max_upload_file_bytes()
+        max_total_bytes = get_max_cumulative_upload_bytes()
 
-        eval_date = evaluation_date or date.today()
-        sub_id = f"sub_{uuid4().hex[:12]}"
-        sub_name = submission_name or f"Submission {sub_id}"
-        sub_contractor = subcontractor_id or "sub_contractor_unknown"
-
-        upload_dir = get_upload_dir() / sub_id
-        upload_dir.mkdir(parents=True, exist_ok=True)
-
+        # Validate requirements upfront before allocating upload artifacts
         if requirements is None:
             reqs = validate_requirement_profile(
                 get_default_requirements(),
@@ -230,286 +325,281 @@ class DocumentReviewService:
                 enforce_effective_date_baseline=False,
             )
 
-        # Select provider: honest mock is default for local application safety
-        if provider_name in ("mock", "honest_mock", "application_mock"):
-            extraction_provider: BaseExtractionProvider = HonestApplicationMockProvider()
-        else:
-            from app.extraction.providers import get_extraction_provider
-            extraction_provider = get_extraction_provider(provider_name=provider_name)
+        # Single-pass bounded read (eliminates double buffering and catches oversized payloads early)
+        coi_bytes, coi_orig_name = await _read_bounded_upload(
+            coi_file, max_file_bytes=max_file_bytes, default_name="coi.pdf"
+        )
+        cumulative_bytes = len(coi_bytes)
+        if cumulative_bytes > max_total_bytes:
+            raise ValueError(
+                f"Total upload size ({cumulative_bytes:,} bytes) exceeds submission limit ({max_total_bytes:,} bytes)."
+            )
 
-        # Resolve OCR provider: use configured instance or detect local Tesseract
-        active_ocr_provider = self.ocr_provider
-        if active_ocr_provider is None:
-            tess = TesseractOCRProvider()
-            if tess.is_available():
-                active_ocr_provider = tess
+        endorsement_payloads: List[Tuple[bytes, str]] = []
+        for end_file in active_endorsements:
+            end_bytes, end_orig_name = await _read_bounded_upload(
+                end_file, max_file_bytes=max_file_bytes, default_name="endorsement.pdf"
+            )
+            cumulative_bytes += len(end_bytes)
+            if cumulative_bytes > max_total_bytes:
+                raise ValueError(
+                    f"Cumulative upload size ({cumulative_bytes:,} bytes) exceeds maximum submission limit "
+                    f"({max_total_bytes:,} bytes). Submit fewer documents per review."
+                )
+            endorsement_payloads.append((end_bytes, end_orig_name))
 
-        pipeline_service = ExtractionPipelineService(
-            extraction_provider=extraction_provider,
-            ocr_provider=active_ocr_provider,
+        return await run_in_threadpool(
+            self._process_validated_sync,
+            coi_bytes=coi_bytes,
+            coi_orig_name=coi_orig_name,
+            endorsement_payloads=endorsement_payloads,
+            reqs=reqs,
+            submission_name=submission_name,
+            evaluation_date=evaluation_date,
+            subcontractor_id=subcontractor_id,
+            provider_name=validated_provider,
         )
 
-        doc_records: List[Dict[str, Any]] = []
-        doc_hashes: Dict[str, str] = {}
-        doc_sets: List[ExtractedDocumentSet] = []
-        pipeline_errors: List[str] = []
-        inspections: List[PDFDocumentInspection] = []
+    def _process_validated_sync(
+        self,
+        *,
+        coi_bytes: bytes,
+        coi_orig_name: str,
+        endorsement_payloads: List[Tuple[bytes, str]],
+        reqs: List[InsuranceRequirement],
+        submission_name: Optional[str],
+        evaluation_date: Optional[date],
+        subcontractor_id: Optional[str],
+        provider_name: str,
+    ) -> Dict[str, Any]:
+        """Execute bounded synchronous PDF, OCR, extraction, evaluation, and atomic persistence."""
+        eval_date = evaluation_date or date.today()
+        sub_id = f"sub_{uuid4().hex[:12]}"
+        sub_name = submission_name or f"Submission {sub_id}"
+        sub_contractor = subcontractor_id or "sub_contractor_unknown"
 
-        # 1. Process COI file
-        coi_doc_id = f"doc_{uuid4().hex[:12]}"
-        try:
-            coi_bytes, coi_path, coi_orig_name = await self.save_uploaded_file(
-                coi_file, upload_dir, coi_doc_id
-            )
-            doc_hashes[coi_doc_id] = hashlib.sha256(coi_bytes).hexdigest()
+        upload_dir = get_upload_dir().resolve() / sub_id
+        dir_created = False
+        persisted = False
 
-            coi_inspection = self.pdf_processor.process_pdf(
-                coi_bytes, document_id=coi_doc_id
-            )
-            inspections.append(coi_inspection)
-
-            # Route to pipeline
-            coi_pipe_result = pipeline_service.process_inspection(
-                coi_inspection, subcontractor_id=sub_contractor
-            )
-
-            if coi_pipe_result.document_set:
-                doc_sets.append(coi_pipe_result.document_set)
-                coi_status = "processed"
-                coi_error = None
-            else:
-                coi_status = "failed"
-                coi_error = (
-                    coi_pipe_result.error_message
-                    or (coi_pipe_result.errors[0] if coi_pipe_result.errors else "Extraction failed")
-                )
-                pipeline_errors.append(f"COI extraction failed: {coi_error}")
-
-            doc_records.append({
-                "id": coi_doc_id,
-                "submission_id": sub_id,
-                "original_filename": coi_orig_name,
-                "document_type": "coi",
-                "storage_path": str(coi_path),
-                "file_size_bytes": len(coi_bytes),
-                "page_count": coi_inspection.page_count,
-                "processing_status": coi_status,
-                "error_message": coi_error,
-            })
-
-        except Exception as exc:
-            err_msg = str(exc)
-            pipeline_errors.append(f"COI processing error: {err_msg}")
-            doc_records.append({
-                "id": coi_doc_id,
-                "submission_id": sub_id,
-                "original_filename": getattr(coi_file, "filename", "coi.pdf") or "coi.pdf",
-                "document_type": "coi",
-                "storage_path": "",
-                "file_size_bytes": 0,
-                "page_count": 0,
-                "processing_status": "failed",
-                "error_message": err_msg,
-            })
-
-        # 2. Process Endorsement files
-        for end_file in endorsement_files:
-            if not end_file or not getattr(end_file, "filename", None):
-                continue
-            end_doc_id = f"doc_{uuid4().hex[:12]}"
+        with _processing_gate.acquire():
             try:
-                end_bytes, end_path, end_orig_name = await self.save_uploaded_file(
-                    end_file, upload_dir, end_doc_id
-                )
-                doc_hashes[end_doc_id] = hashlib.sha256(end_bytes).hexdigest()
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                dir_created = True
 
-                end_inspection = self.pdf_processor.process_pdf(
-                    end_bytes, document_id=end_doc_id
-                )
-                inspections.append(end_inspection)
-
-                end_pipe_result = pipeline_service.process_inspection(
-                    end_inspection, subcontractor_id=sub_contractor
-                )
-
-                if end_pipe_result.document_set:
-                    doc_sets.append(end_pipe_result.document_set)
-                    end_status = "processed"
-                    end_error = None
+                # Select provider using explicit server allowlist enforcement
+                if provider_name in ("mock", "honest_mock", "application_mock"):
+                    extraction_provider: BaseExtractionProvider = HonestApplicationMockProvider()
                 else:
-                    end_status = "failed"
-                    end_error = (
-                        end_pipe_result.error_message
-                        or (end_pipe_result.errors[0] if end_pipe_result.errors else "Extraction failed")
+                    from app.extraction.providers import get_extraction_provider
+                    extraction_provider = get_extraction_provider(
+                        provider_name=provider_name,
                     )
-                    pipeline_errors.append(f"Endorsement '{end_orig_name}' extraction failed: {end_error}")
 
-                doc_records.append({
-                    "id": end_doc_id,
-                    "submission_id": sub_id,
-                    "original_filename": end_orig_name,
-                    "document_type": "endorsement",
-                    "storage_path": str(end_path),
-                    "file_size_bytes": len(end_bytes),
-                    "page_count": end_inspection.page_count,
-                    "processing_status": end_status,
-                    "error_message": end_error,
-                })
-            except Exception as exc:
-                err_msg = str(exc)
-                pipeline_errors.append(f"Endorsement file error: {err_msg}")
-                doc_records.append({
-                    "id": end_doc_id,
-                    "submission_id": sub_id,
-                    "original_filename": getattr(end_file, "filename", "endorsement.pdf"),
-                    "document_type": "endorsement",
-                    "storage_path": "",
-                    "file_size_bytes": 0,
-                    "page_count": 0,
-                    "processing_status": "failed",
-                    "error_message": err_msg,
-                })
+                # Resolve OCR provider: use configured instance or detect local Tesseract
+                active_ocr_provider = self.ocr_provider
+                if active_ocr_provider is None:
+                    tess = TesseractOCRProvider()
+                    if tess.is_available():
+                        active_ocr_provider = tess
 
-        # 3. Assemble composite document set & evaluate compliance
-        named_subcontractor = None
-        if doc_sets:
-            # Build composite ExtractedDocumentSet
-            combined_coverages = []
-            combined_endorsements = []
-            named_insured_info = None
-            additional_named_insureds = []
-            cert_holder_info = None
-            contradictions = []
-
-            for ds in doc_sets:
-                if ds.named_insured and (ds.named_insured.name or ds.named_insured.evidence):
-                    if not named_insured_info or not named_insured_info.name:
-                        named_insured_info = ds.named_insured
-                    else:
-                        additional_named_insureds.append(ds.named_insured)
-                if ds.additional_named_insureds:
-                    additional_named_insureds.extend(ds.additional_named_insureds)
-                if ds.certificate_holder and (not cert_holder_info or not cert_holder_info.name):
-                    cert_holder_info = ds.certificate_holder
-                combined_coverages.extend(ds.coverages)
-                combined_endorsements.extend(ds.endorsements)
-                contradictions.extend(ds.raw_contradictions_detected)
-
-            if named_insured_info and named_insured_info.name:
-                named_subcontractor = named_insured_info.name
-
-            composite_set = ExtractedDocumentSet(
-                subcontractor_id=sub_contractor,
-                documents_submitted=[i.classified_type for i in inspections],
-                is_document_set_complete=len(pipeline_errors) == 0,
-                named_insured=named_insured_info,
-                additional_named_insureds=additional_named_insureds,
-                certificate_holder=cert_holder_info,
-                coverages=combined_coverages,
-                endorsements=combined_endorsements,
-                raw_contradictions_detected=list(set(contradictions)),
-            )
-
-            # Reconcile cross-document contradictions and structured reconciliation checks once
-            reconcile_cross_document_set(composite_set)
-            composite_set.reconciliation_result = reconcile_extracted_document_set(
-                document_set=composite_set,
-                requirements=reqs,
-                evaluation_date=eval_date,
-                packet_id=sub_id,
-                document_hashes=doc_hashes,
-            )
-
-            # Run deterministic evaluation (reuses attached reconciliation_result without duplicating)
-            review_result = self.evaluator.evaluate(
-                document_set=composite_set,
-                requirements=reqs,
-                evaluation_date=eval_date,
-            )
-
-            # Invariant: If any document failed pipeline processing, submission can NEVER be COMPLIANT
-            if pipeline_errors and review_result.overall_status == ComplianceStatus.COMPLIANT:
-                review_result.overall_status = ComplianceStatus.REQUIRES_HUMAN_REVIEW
-                review_result.requires_human_review = True
-                review_result.findings.append(
-                    ComplianceFinding(
-                        requirement_id="PIPELINE_ERROR",
-                        rule_type=RequirementType.NAMED_INSURED,
-                        status=ComplianceStatus.UNABLE_TO_DETERMINE,
-                        severity=Severity.CRITICAL,
-                        reason_code="DOCUMENT_PROCESSING_FAILED",
-                        explanation=f"One or more documents failed pipeline extraction: {'; '.join(pipeline_errors)}",
-                        requires_human_review=True,
-                        evidence=[],
-                    )
+                pipeline_service = ExtractionPipelineService(
+                    extraction_provider=extraction_provider,
+                    ocr_provider=active_ocr_provider,
                 )
 
-        else:
-            # Zero documents succeeded extraction -> Hard failure, NEVER COMPLIANT
-            review_result = ComplianceReviewResult(
-                subcontractor_id=sub_contractor,
-                evaluation_date=eval_date,
-                overall_status=ComplianceStatus.UNABLE_TO_DETERMINE,
-                requires_human_review=True,
-                findings=[
-                    ComplianceFinding(
-                        requirement_id="EXTRACTION_FAILURE",
-                        rule_type=RequirementType.NAMED_INSURED,
-                        status=ComplianceStatus.UNABLE_TO_DETERMINE,
-                        severity=Severity.CRITICAL,
-                        reason_code="EXTRACTION_FAILED",
-                        explanation=(
-                            "No insurance data could be reliably extracted. "
-                            + ("; ".join(pipeline_errors) if pipeline_errors else "Empty document set.")
-                        ),
-                        requires_human_review=True,
-                        evidence=[],
+                doc_records: List[Dict[str, Any]] = []
+                doc_hashes: Dict[str, str] = {}
+                doc_sets: List[ExtractedDocumentSet] = []
+                pipeline_errors: List[str] = []
+                inspections: List[PDFDocumentInspection] = []
+
+                all_docs: List[Tuple[str, bytes, str]] = [("coi", coi_bytes, coi_orig_name)] + [
+                    ("endorsement", eb, en) for eb, en in endorsement_payloads
+                ]
+
+                for doc_type_str, doc_bytes, orig_name in all_docs:
+                    doc_id = f"doc_{uuid4().hex[:12]}"
+                    saved_path = self._write_validated_pdf(
+                        doc_bytes, orig_name, upload_dir, doc_id
                     )
-                ],
-            )
-            composite_set = None
+                    doc_hashes[doc_id] = hashlib.sha256(doc_bytes).hexdigest()
 
-        # 4. Persist to SQLite
-        serialized_result = {
-            "review": review_result.model_dump(mode="json"),
-            "document_set": composite_set.model_dump(mode="json") if composite_set else None,
-            "pipeline_errors": pipeline_errors,
-        }
+                    try:
+                        inspection = self.pdf_processor.process_pdf(
+                            doc_bytes, document_id=doc_id, filename=orig_name
+                        )
+                        inspections.append(inspection)
+                        pipe_result = pipeline_service.process_inspection(
+                            inspection, subcontractor_id=sub_contractor
+                        )
 
-        self.repository.create_submission(
-            submission_id=sub_id,
-            name=sub_name,
-            overall_status=review_result.overall_status.value,
-            processing_status="completed" if not pipeline_errors else "completed_with_errors",
-            provider=provider_name,
-            evaluation_date=eval_date.isoformat(),
-            result_data=serialized_result,
-            subcontractor_name=named_subcontractor,
-        )
+                        if pipe_result.document_set:
+                            doc_sets.append(pipe_result.document_set)
+                            proc_status = "processed"
+                            proc_error = None
+                        else:
+                            proc_status = "failed"
+                            proc_error = (
+                                pipe_result.error_message
+                                or (pipe_result.errors[0] if pipe_result.errors else "Extraction failed")
+                            )
+                            prefix = "COI extraction failed" if doc_type_str == "coi" else f"Endorsement '{orig_name}' extraction failed"
+                            pipeline_errors.append(f"{prefix}: {proc_error}")
 
-        for d in doc_records:
-            self.repository.add_document(
-                document_id=d["id"],
-                submission_id=d["submission_id"],
-                original_filename=d["original_filename"],
-                document_type=d["document_type"],
-                storage_path=d["storage_path"],
-                file_size_bytes=d["file_size_bytes"],
-                page_count=d["page_count"],
-                processing_status=d["processing_status"],
-                error_message=d["error_message"],
-            )
+                        doc_records.append({
+                            "id": doc_id,
+                            "submission_id": sub_id,
+                            "original_filename": orig_name,
+                            "document_type": doc_type_str,
+                            "storage_path": str(saved_path),
+                            "file_size_bytes": len(doc_bytes),
+                            "page_count": inspection.page_count,
+                            "processing_status": proc_status,
+                            "error_message": proc_error,
+                        })
+                    except Exception as doc_exc:
+                        err_msg = str(doc_exc)
+                        label = "COI" if doc_type_str == "coi" else "Endorsement file"
+                        pipeline_errors.append(f"{label} error: {err_msg}")
+                        doc_records.append({
+                            "id": doc_id,
+                            "submission_id": sub_id,
+                            "original_filename": orig_name,
+                            "document_type": doc_type_str,
+                            "storage_path": str(saved_path),
+                            "file_size_bytes": len(doc_bytes),
+                            "page_count": 0,
+                            "processing_status": "failed",
+                            "error_message": err_msg,
+                        })
 
-        # 5. Return complete payload
-        return {
-            "submission_id": sub_id,
-            "name": sub_name,
-            "overall_status": review_result.overall_status.value,
-            "requires_human_review": review_result.requires_human_review,
-            "provider": provider_name,
-            "evaluation_date": eval_date.isoformat(),
-            "subcontractor_name": named_subcontractor,
-            "review_result": review_result,
-            "documents": doc_records,
-            "pipeline_errors": pipeline_errors,
-        }
+                # Assemble composite document set & evaluate compliance deterministically
+                named_subcontractor = None
+                if doc_sets:
+                    combined_coverages = []
+                    combined_endorsements = []
+                    named_insured_info = None
+                    additional_named_insureds = []
+                    cert_holder_info = None
+                    contradictions = []
+
+                    for ds in doc_sets:
+                        if ds.named_insured and (ds.named_insured.name or ds.named_insured.evidence):
+                            if not named_insured_info or not named_insured_info.name:
+                                named_insured_info = ds.named_insured
+                            else:
+                                additional_named_insureds.append(ds.named_insured)
+                        if ds.additional_named_insureds:
+                            additional_named_insureds.extend(ds.additional_named_insureds)
+                        if ds.certificate_holder and (not cert_holder_info or not cert_holder_info.name):
+                            cert_holder_info = ds.certificate_holder
+                        combined_coverages.extend(ds.coverages)
+                        combined_endorsements.extend(ds.endorsements)
+                        contradictions.extend(ds.raw_contradictions_detected)
+
+                    if named_insured_info and named_insured_info.name:
+                        named_subcontractor = named_insured_info.name
+
+                    composite_set = ExtractedDocumentSet(
+                        subcontractor_id=sub_contractor,
+                        documents_submitted=[i.classified_type for i in inspections],
+                        is_document_set_complete=len(pipeline_errors) == 0,
+                        named_insured=named_insured_info,
+                        additional_named_insureds=additional_named_insureds,
+                        certificate_holder=cert_holder_info,
+                        coverages=combined_coverages,
+                        endorsements=combined_endorsements,
+                        raw_contradictions_detected=list(set(contradictions)),
+                    )
+
+                    reconcile_cross_document_set(composite_set)
+                    composite_set.reconciliation_result = reconcile_extracted_document_set(
+                        document_set=composite_set,
+                        requirements=reqs,
+                        evaluation_date=eval_date,
+                        packet_id=sub_id,
+                        document_hashes=doc_hashes,
+                    )
+
+                    review_result = self.evaluator.evaluate(
+                        document_set=composite_set,
+                        requirements=reqs,
+                        evaluation_date=eval_date,
+                    )
+
+                    if pipeline_errors and review_result.overall_status == ComplianceStatus.COMPLIANT:
+                        review_result.overall_status = ComplianceStatus.REQUIRES_HUMAN_REVIEW
+                        review_result.requires_human_review = True
+                        review_result.findings.append(
+                            ComplianceFinding(
+                                requirement_id="PIPELINE_ERROR",
+                                rule_type=RequirementType.NAMED_INSURED,
+                                status=ComplianceStatus.UNABLE_TO_DETERMINE,
+                                severity=Severity.CRITICAL,
+                                reason_code="DOCUMENT_PROCESSING_FAILED",
+                                explanation=f"One or more documents failed pipeline extraction: {'; '.join(pipeline_errors)}",
+                                requires_human_review=True,
+                                evidence=[],
+                            )
+                        )
+                else:
+                    review_result = ComplianceReviewResult(
+                        subcontractor_id=sub_contractor,
+                        evaluation_date=eval_date,
+                        overall_status=ComplianceStatus.UNABLE_TO_DETERMINE,
+                        requires_human_review=True,
+                        findings=[
+                            ComplianceFinding(
+                                requirement_id="EXTRACTION_FAILURE",
+                                rule_type=RequirementType.NAMED_INSURED,
+                                status=ComplianceStatus.UNABLE_TO_DETERMINE,
+                                severity=Severity.CRITICAL,
+                                reason_code="EXTRACTION_FAILED",
+                                explanation=(
+                                    "No insurance data could be reliably extracted. "
+                                    + ("; ".join(pipeline_errors) if pipeline_errors else "Empty document set.")
+                                ),
+                                requires_human_review=True,
+                                evidence=[],
+                            )
+                        ],
+                    )
+                    composite_set = None
+
+                serialized_result = {
+                    "review": review_result.model_dump(mode="json"),
+                    "document_set": composite_set.model_dump(mode="json") if composite_set else None,
+                    "pipeline_errors": pipeline_errors,
+                }
+
+                # Single atomic SQLite transaction for submission + all document records
+                self.repository.create_submission_with_documents(
+                    submission_id=sub_id,
+                    name=sub_name,
+                    overall_status=review_result.overall_status.value,
+                    processing_status="completed" if not pipeline_errors else "completed_with_errors",
+                    provider=provider_name,
+                    evaluation_date=eval_date.isoformat(),
+                    result_data=serialized_result,
+                    documents=doc_records,
+                    subcontractor_name=named_subcontractor,
+                )
+                persisted = True
+
+                return {
+                    "submission_id": sub_id,
+                    "name": sub_name,
+                    "overall_status": review_result.overall_status.value,
+                    "requires_human_review": review_result.requires_human_review,
+                    "provider": provider_name,
+                    "evaluation_date": eval_date.isoformat(),
+                    "subcontractor_name": named_subcontractor,
+                    "review_result": review_result,
+                    "documents": doc_records,
+                    "pipeline_errors": pipeline_errors,
+                }
+            except Exception:
+                if dir_created and not persisted:
+                    shutil.rmtree(upload_dir, ignore_errors=True)
+                raise

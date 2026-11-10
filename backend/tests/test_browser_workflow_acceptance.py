@@ -27,13 +27,13 @@ from uuid import uuid4
 import uvicorn
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
-from app.main import app, repository
+from app.main import app, auth_service, repository
 from app.persistence.database import init_db
 from app.schemas.insurance import ComplianceStatus
+from app.security.rate_limit import api_mutation_rate_limiter, login_rate_limiter
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-SCREENSHOTS_DIR = BASE_DIR.parent / "evaluation" / "reports" / "browser_screenshots"
 FIXTURES_DIR = BASE_DIR / "evaluation" / "fixtures" / "pdfs"
 
 
@@ -43,10 +43,14 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
     server = None
     server_thread = None
     base_url = ""
+    screenshots_dir: Path
     _temp_dir = None
     _orig_env_db = None
     _orig_env_up = None
     _orig_repo_db = None
+    _browser_username = "browser_auditor"
+    _browser_display_name = "Senior Risk Auditor"
+    _browser_password = "Br0wser!Audit#Pass2026"
 
     @classmethod
     def _allocate_free_port(cls, host="127.0.0.1") -> int:
@@ -62,12 +66,16 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
         if not Path(CHROME_PATH).exists():
             raise unittest.SkipTest(f"Google Chrome executable not found at {CHROME_PATH}")
 
-        # Isolate SQLite DB, upload directory, and ephemeral server port per test run
+        # Isolate SQLite DB, upload directory, screenshots, and ephemeral server port per test run
         cls._temp_dir = tempfile.TemporaryDirectory()
+        cls.screenshots_dir = Path(
+            os.getenv("SUBGUARD_BROWSER_SCREENSHOT_DIR")
+            or (Path(cls._temp_dir.name) / "screenshots")
+        )
+        cls.screenshots_dir.mkdir(parents=True, exist_ok=True)
         cls._orig_env_db = os.environ.get("SUBGUARD_DB_PATH")
         cls._orig_env_up = os.environ.get("SUBGUARD_UPLOAD_DIR")
         cls._orig_repo_db = repository.db_path
@@ -80,6 +88,14 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         os.environ["SUBGUARD_UPLOAD_DIR"] = str(isolated_uploads)
         init_db(isolated_db)
         repository.db_path = isolated_db
+
+        auth_service.create_user(
+            username=cls._browser_username,
+            display_name=cls._browser_display_name,
+            password=cls._browser_password,
+            role="admin",
+            db_path=isolated_db,
+        )
 
         # Always start an isolated local uvicorn server on a free ephemeral port
         cls.port = cls._allocate_free_port()
@@ -125,6 +141,8 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
             cls._temp_dir.cleanup()
 
     def setUp(self):
+        login_rate_limiter.reset()
+        api_mutation_rate_limiter.reset()
         self.console_logs: list[str] = []
         self.page_errors: list[str] = []
         self.failed_requests: list[str] = []
@@ -139,6 +157,18 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         self.page.on("console", lambda msg: self.console_logs.append(f"[{msg.type}] {msg.text}"))
         self.page.on("pageerror", lambda exc: self.page_errors.append(str(exc)))
         self.page.on("requestfailed", lambda req: self.failed_requests.append(f"{req.method} {req.url}"))
+
+        # Authenticate browser session through /login (verifies protected redirect + login + CSRF meta + no localStorage)
+        self.page.goto(f"{self.base_url}/dashboard", wait_until="networkidle")
+        self.assertIn("/login", self.page.url)
+        self.page.fill("#username", self._browser_username)
+        self.page.fill("#password", self._browser_password)
+        self.page.click("#loginBtn")
+        self.page.wait_for_url("**/dashboard", timeout=15000)
+        csrf_meta = self.page.locator("meta[name='csrf-token']").get_attribute("content")
+        self.assertTrue(bool(csrf_meta), "Authenticated page must embed synchronizer CSRF meta token")
+        ls_len = self.page.evaluate("() => window.localStorage.length")
+        self.assertEqual(ls_len, 0, "Auth tokens must never be written to browser localStorage")
 
     def tearDown(self):
         self.context.close()
@@ -155,14 +185,14 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         self.assertTrue(self.page.locator("text=Compliance Dashboard").is_visible())
         self.assertTrue(self.page.locator("text=+ New Review").is_visible())
 
-        # Save desktop screenshot
-        self.page.screenshot(path=str(SCREENSHOTS_DIR / "01_dashboard_desktop.png"))
+        # Save desktop screenshot (isolated temp dir)
+        self.page.screenshot(path=str(self.screenshots_dir / "01_dashboard_desktop.png"))
 
         # Mobile layout
         self.page.set_viewport_size({"width": 375, "height": 667})
         self.page.goto(f"{self.base_url}/dashboard", wait_until="networkidle")
         self.assertTrue(self.page.locator("text=Compliance Dashboard").is_visible())
-        self.page.screenshot(path=str(SCREENSHOTS_DIR / "01_dashboard_mobile.png"))
+        self.page.screenshot(path=str(self.screenshots_dir / "01_dashboard_mobile.png"))
 
         # Verify zero unhandled JS exceptions
         self.assertEqual(len(self.page_errors), 0, f"Unexpected JS page errors: {self.page_errors}")
@@ -173,8 +203,8 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         self.page.goto(f"{self.base_url}/submissions/new", wait_until="networkidle")
         self.assertIn("New Insurance Review", self.page.title())
 
-        # Screenshot empty form
-        self.page.screenshot(path=str(SCREENSHOTS_DIR / "02_new_submission_form.png"))
+        # Screenshot empty form (isolated temp dir)
+        self.page.screenshot(path=str(self.screenshots_dir / "02_new_submission_form.png"))
 
         # Test A: Invalid file extension rejection
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp_txt:
@@ -217,8 +247,8 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         self.assertTrue(self.page.locator(f"text={sub_name}").first.is_visible())
         self.assertTrue(self.page.locator("text=Apex Electrical Contractors LLC").first.is_visible())
 
-        # Capture screenshot of results
-        self.page.screenshot(path=str(SCREENSHOTS_DIR / "03_submission_results.png"))
+        # Capture screenshot of results (isolated temp dir)
+        self.page.screenshot(path=str(self.screenshots_dir / "03_submission_results.png"))
 
     def test_03_submission_results_and_evidence_viewer(self):
         """3. Submission results render coverage limits and findings; evidence viewer provides source citations and download."""
@@ -258,7 +288,7 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         self.assertTrue(self.page.locator("text=Traceable Evidence Verification").is_visible())
         self.assertTrue(self.page.locator("text=General Contractor Corp").first.is_visible())
 
-        self.page.screenshot(path=str(SCREENSHOTS_DIR / "04_evidence_viewer.png"))
+        self.page.screenshot(path=str(self.screenshots_dir / "04_evidence_viewer.png"))
 
     def test_04_human_review_workflow_and_guardrails(self):
         """4. Human review enforces notes requirement, blocks hard failure approvals, and records valid reviews."""
@@ -299,10 +329,11 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
         # Navigate to Human Review form for this submission
         self.page.goto(f"{self.base_url}/submissions/{sub_id}/review", wait_until="networkidle")
         self.assertTrue(self.page.locator("text=Human Review Decision").is_visible())
+        self.assertTrue(self.page.locator("#reviewer_name").is_disabled())
+        self.assertIn(self._browser_display_name, self.page.locator("#reviewer_name").input_value())
 
         # Test A: Attempted Approval of Deterministic Hard Failure
         self.page.select_option("#review_status", "accepted_exception")
-        self.page.fill("#reviewer_name", "Test Reviewer")
         self.page.fill("#reviewer_notes", "Attempting blanket approval of a deficient limit")
         self.page.select_option("#update_submission_status", "compliant")
         self.page.click("#recordReviewBtn")
@@ -325,19 +356,18 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
 
         # Test C: Valid Action — Issue Deficiency Notice to Subcontractor
         self.page.select_option("#review_status", "deficiency_notice_required")
-        self.page.fill("#reviewer_name", "Senior Risk Auditor")
         self.page.fill("#reviewer_notes", "Deficiency Notice #1042 issued for GL occurrence sub-limit ($500k vs required $1M).")
         self.page.select_option("#update_submission_status", "deficiency_pending")
         self.page.click("#recordReviewBtn")
 
-        # Wait for redirect back to submission detail
+        # Wait for redirect back to submission detail (reviewer identity derived from authenticated principal)
         self.page.wait_for_url(f"**/submissions/{sub_id}", timeout=10000)
-        self.assertTrue(self.page.locator("text=Senior Risk Auditor").is_visible())
+        self.assertTrue(self.page.locator(f"text={self._browser_display_name}").first.is_visible())
         self.assertTrue(self.page.locator("text=Deficiency Notice #1042 issued").is_visible())
         self.assertTrue(self.page.locator("text=deficiency_notice_required").is_visible())
 
-        # Capture screenshot of recorded audit trail
-        self.page.screenshot(path=str(SCREENSHOTS_DIR / "05_human_review_audit_saved.png"))
+        # Capture screenshot of recorded audit trail (isolated temp dir)
+        self.page.screenshot(path=str(self.screenshots_dir / "05_human_review_audit_saved.png"))
 
     def test_05_submission_history_search_and_navigation(self):
         """5. Submission history supports live text search, status dropdown filtering, and link navigation."""
@@ -354,7 +384,7 @@ class TestBrowserWorkflowAcceptance(unittest.TestCase):
 
         # Verify search results render
         self.assertTrue(self.page.locator("text=Apex Electrical").first.is_visible())
-        self.page.screenshot(path=str(SCREENSHOTS_DIR / "06_submission_history.png"))
+        self.page.screenshot(path=str(self.screenshots_dir / "06_submission_history.png"))
 
         # Click into first result via Reopen Result button
         self.page.click("table.data-table tbody tr:first-child a.btn-sm")

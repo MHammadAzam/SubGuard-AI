@@ -23,6 +23,7 @@ from app.security.passwords import (
     generate_opaque_token,
     hash_opaque_token,
     hash_password,
+    needs_rehash,
     verify_password,
 )
 
@@ -292,6 +293,19 @@ class AuthService:
         if not bool(row["is_active"]):
             return None
 
+        if needs_rehash(row["password_hash"]):
+            upgraded_hash = hash_password(password, enforce_policy=False)
+            ts = _now_utc().isoformat()
+            upgrade_conn = get_connection(self._db_path(db_path))
+            try:
+                with upgrade_conn:
+                    upgrade_conn.execute(
+                        "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                        (upgraded_hash, ts, row["id"]),
+                    )
+            finally:
+                upgrade_conn.close()
+
         return {
             "id": row["id"],
             "username": row["username"],
@@ -500,5 +514,21 @@ class AuthService:
                 session_id=row["session_id"],
                 csrf_token=row["csrf_token"],
             )
+        finally:
+            conn.close()
+
+    def purge_expired_sessions(
+        self, *, now: Optional[datetime] = None, db_path: Optional[Path] = None
+    ) -> int:
+        """Delete only expired or already-revoked sessions/tokens; preserve all active ones."""
+        cutoff = (now or _now_utc()).isoformat()
+        conn = get_connection(self._db_path(db_path))
+        try:
+            with conn:
+                cur = conn.execute(
+                    "DELETE FROM sessions WHERE revoked_at IS NOT NULL OR expires_at <= ?",
+                    (cutoff,),
+                )
+                return int(cur.rowcount)
         finally:
             conn.close()

@@ -69,7 +69,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     admin_cmd.add_argument("--password-env", default=None, help="Env var holding initial password")
     admin_cmd.add_argument("--db-path", default=None, help="Optional explicit SQLite DB path")
 
+    purge_cmd = subparsers.add_parser("purge-sessions", help="Remove expired or revoked session/token records")
+    purge_cmd.add_argument("--db-path", default=None, help="Optional explicit SQLite DB path")
+
     args = parser.parse_args(argv)
+    if args.command == "purge-sessions":
+        db_path = Path(args.db_path) if args.db_path else None
+        init_db(db_path)
+        svc = AuthService()
+        deleted = svc.purge_expired_sessions(db_path=db_path)
+        print(f"Purged {deleted} expired/revoked session record(s).")
+        return 0
     if args.command == "create-admin":
         db_path = Path(args.db_path) if args.db_path else None
         init_db(db_path)

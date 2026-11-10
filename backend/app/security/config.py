@@ -7,13 +7,15 @@ import logging
 import os
 import secrets
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from app.persistence.database import get_connection
 
 logger = logging.getLogger("subguard.security")
 
 VALID_APP_ENVS = {"development", "test", "production"}
+SUPPORTED_PROVIDER_NAMES = {"mock", "honest_mock", "application_mock", "gemini", "openrouter"}
+_MOCK_ALIASES = {"mock", "honest_mock", "application_mock"}
 SESSION_COOKIE_NAME = "subguard_session"
 PRE_LOGIN_CSRF_COOKIE_NAME = "subguard_login_csrf"
 
@@ -209,6 +211,90 @@ def get_api_mutation_rate_limits() -> tuple[int, int]:
     max_req = max(1, int(os.getenv("SUBGUARD_API_MUTATION_LIMIT", "120").strip()))
     window = max(1, int(os.getenv("SUBGUARD_API_MUTATION_WINDOW_SECONDS", "60").strip()))
     return max_req, window
+
+
+def get_allowed_providers() -> Set[str]:
+    """Return server-allowed extraction provider names (defaults strictly to offline mock)."""
+    raw = os.getenv("SUBGUARD_ALLOWED_PROVIDERS", "mock").strip()
+    tokens = {tok.strip().lower() for tok in raw.split(",") if tok.strip()}
+    if not tokens:
+        raise RuntimeError("SUBGUARD_ALLOWED_PROVIDERS must contain at least one provider.")
+    allowed: Set[str] = set()
+    for tok in tokens:
+        if tok not in SUPPORTED_PROVIDER_NAMES:
+            raise RuntimeError(
+                f"Invalid provider '{tok}' in SUBGUARD_ALLOWED_PROVIDERS. "
+                f"Supported: {sorted(SUPPORTED_PROVIDER_NAMES)}"
+            )
+        if tok in _MOCK_ALIASES:
+            allowed.update(_MOCK_ALIASES if tok == "mock" else {tok})
+        else:
+            allowed.add(tok)
+    return allowed
+
+
+def validate_requested_provider(provider_name: Optional[str]) -> str:
+    """Validate requested provider against supported names and server allowlist.
+
+    Raises:
+        ValueError: Unknown provider name.
+        PermissionError: Provider is known but disabled by server configuration.
+    """
+    normalized = (provider_name or "mock").strip().lower()
+    if normalized not in SUPPORTED_PROVIDER_NAMES:
+        raise ValueError(
+            f"Unsupported extraction provider: '{normalized}'. "
+            f"Supported: 'mock', 'gemini', 'openrouter'."
+        )
+    allowed = get_allowed_providers()
+    if normalized not in allowed:
+        raise PermissionError(
+            f"Extraction provider '{normalized}' is disabled by server configuration "
+            "(SUBGUARD_ALLOWED_PROVIDERS)."
+        )
+    return normalized
+
+
+def get_max_upload_file_bytes() -> int:
+    """Maximum individual uploaded PDF size in bytes (default 15 MiB)."""
+    raw = os.getenv("SUBGUARD_MAX_FILE_BYTES", str(15 * 1024 * 1024)).strip()
+    return max(1024, int(raw))
+
+
+def get_max_endorsement_files() -> int:
+    """Maximum endorsement PDFs per submission (default 10 for 8 GB host safety)."""
+    raw = os.getenv("SUBGUARD_MAX_ENDORSEMENT_FILES", "10").strip()
+    return max(1, int(raw))
+
+
+def get_max_cumulative_upload_bytes() -> int:
+    """Maximum total bytes across all files in one submission (default 50 MiB)."""
+    raw = os.getenv("SUBGUARD_MAX_CUMULATIVE_UPLOAD_BYTES", str(50 * 1024 * 1024)).strip()
+    return max(get_max_upload_file_bytes(), int(raw))
+
+
+def get_max_concurrent_processing() -> int:
+    """Maximum concurrent PDF/OCR/extraction review executions (default 2)."""
+    raw = os.getenv("SUBGUARD_MAX_CONCURRENT_REVIEWS", "2").strip()
+    return max(1, min(16, int(raw)))
+
+
+def get_max_provider_images() -> int:
+    """Maximum rendered PNG page images allowed in a single AI extraction call (default 12)."""
+    raw = os.getenv("SUBGUARD_MAX_PROVIDER_IMAGES", "12").strip()
+    return max(1, int(raw))
+
+
+def get_max_provider_payload_bytes() -> int:
+    """Maximum decoded payload bytes (text + images) allowed per AI extraction call (default 12 MiB)."""
+    raw = os.getenv("SUBGUARD_MAX_PROVIDER_PAYLOAD_BYTES", str(12 * 1024 * 1024)).strip()
+    return max(65536, int(raw))
+
+
+def get_audit_log_path() -> Optional[Path]:
+    """Optional rotating security audit log file path (SUBGUARD_AUDIT_LOG_PATH)."""
+    raw = os.getenv("SUBGUARD_AUDIT_LOG_PATH", "").strip()
+    return Path(raw) if raw else None
 
 
 def validate_production_config(db_path: Optional[Path] = None, *, require_active_admin: bool = True) -> None:

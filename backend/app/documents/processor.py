@@ -27,8 +27,9 @@ from app.schemas.pdf import (
 )
 
 
-# Security limits per SECURITY.md and PRODUCT_SPEC.md
-MAX_PDF_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB
+# Internal processor upper bound (supports high-DPI multi-page scans up to 25 MiB);
+# HTTP uploads enforce stricter 15 MiB default via DocumentReviewService(max_pdf_size_bytes=...).
+MAX_PDF_SIZE_BYTES = 25 * 1024 * 1024  # 25 MiB processor ceiling
 MAX_PAGE_COUNT = 100                    # Limit excessive pages
 MAX_RENDER_DIMENSION_PX = 4096          # Max rasterized pixel dimension (prevent memory bombs)
 PDF_MAGIC_BYTES = b"%PDF"
@@ -258,10 +259,12 @@ class PDFProcessor:
         render_dpi: int = 150,
         max_page_count: int = MAX_PAGE_COUNT,
         max_render_dimension_px: int = MAX_RENDER_DIMENSION_PX,
+        max_pdf_size_bytes: int = MAX_PDF_SIZE_BYTES,
     ):
         self.render_dpi = render_dpi
         self.max_page_count = max_page_count
         self.max_render_dimension_px = max_render_dimension_px
+        self.max_pdf_size_bytes = max_pdf_size_bytes
 
     def process_pdf(
         self,
@@ -281,7 +284,7 @@ class PDFProcessor:
         Returns:
             PDFDocumentInspection with page details, text spans, and classification
         """
-        validate_pdf_bytes(pdf_bytes)
+        validate_pdf_bytes(pdf_bytes, max_size_bytes=self.max_pdf_size_bytes)
 
         sha256_hash = hashlib.sha256(pdf_bytes).hexdigest()
 

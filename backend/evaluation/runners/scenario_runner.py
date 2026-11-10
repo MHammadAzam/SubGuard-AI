@@ -760,8 +760,8 @@ def execute_cohort_benchmark(
     if extraction_provider is not None:
         active_provider = extraction_provider
     elif provider_name == "openrouter":
-        from app.extraction.providers import get_extraction_provider
-        active_provider = get_extraction_provider(
+        from app.extraction.providers import get_benchmark_extraction_provider
+        active_provider = get_benchmark_extraction_provider(
             "openrouter",
             model_name=model_name,
             max_retries=max_retries,

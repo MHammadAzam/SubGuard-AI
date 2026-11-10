@@ -67,6 +67,79 @@ class SubmissionRepository:
 
         return self.get_submission_by_id(submission_id)  # type: ignore
 
+    def create_submission_with_documents(
+        self,
+        *,
+        submission_id: str,
+        name: str,
+        overall_status: str,
+        processing_status: str,
+        provider: str,
+        evaluation_date: str,
+        result_data: Dict[str, Any],
+        documents: List[Dict[str, Any]],
+        subcontractor_name: Optional[str] = None,
+        created_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Atomically persist a submission and all associated document rows in one SQLite transaction."""
+        sub_ts = created_at or _now_iso()
+        serialized = json.dumps(result_data)
+        conn = get_connection(self.db_path)
+        conn.isolation_level = None
+        try:
+            conn.execute("BEGIN IMMEDIATE;")
+            conn.execute(
+                """
+                INSERT INTO submissions (
+                    id, name, created_at, overall_status, processing_status,
+                    provider, evaluation_date, subcontractor_name, result_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    submission_id,
+                    name,
+                    sub_ts,
+                    overall_status,
+                    processing_status,
+                    provider,
+                    evaluation_date,
+                    subcontractor_name,
+                    serialized,
+                ),
+            )
+            for doc in documents:
+                doc_ts = _now_iso()
+                conn.execute(
+                    """
+                    INSERT INTO documents (
+                        id, submission_id, original_filename, document_type,
+                        storage_path, file_size_bytes, page_count,
+                        upload_timestamp, processing_status, error_message
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        doc["id"],
+                        doc["submission_id"],
+                        doc["original_filename"],
+                        doc["document_type"],
+                        doc["storage_path"],
+                        doc["file_size_bytes"],
+                        doc.get("page_count", 0),
+                        doc_ts,
+                        doc.get("processing_status", "processed"),
+                        doc.get("error_message"),
+                    ),
+                )
+            conn.execute("COMMIT;")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK;")
+            raise
+        finally:
+            conn.close()
+
+        return self.get_submission_by_id(submission_id)  # type: ignore
+
     def add_document(
         self,
         document_id: str,

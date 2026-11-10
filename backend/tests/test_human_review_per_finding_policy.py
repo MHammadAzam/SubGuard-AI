@@ -688,6 +688,13 @@ class TestHumanReviewPerFindingPolicy(unittest.TestCase):
             conn.close()
 
         failing_client = TestClient(app, raise_server_exceptions=False)
+        authenticate_session_client(
+            failing_client,
+            db_path=self.db_path,
+            username="auditor_iss01",
+            display_name="Auditor",
+            role="reviewer",
+        )
         res = failing_client.post(
             f"/api/v1/submissions/{sid}/review",
             json={

@@ -5,16 +5,78 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import os
 import secrets
-from typing import Tuple
+import threading
+from contextlib import contextmanager
+from typing import Iterator, Tuple
 
-# Benchmarked on target host (~172 ms per derivation at 32 MiB working memory)
-DEFAULT_SCRYPT_N = 32768
+# OWASP Password Storage Cheat Sheet minimum: N=2^17 (131072), r=8, p=1 (~128 MiB, ~754 ms on host)
+DEFAULT_SCRYPT_N = 131072
 DEFAULT_SCRYPT_R = 8
 DEFAULT_SCRYPT_P = 1
+MIN_SUPPORTED_SCRYPT_N = 16384
+MAX_SUPPORTED_SCRYPT_N = 1048576
 SCRYPT_DKLEN = 32
 SCRYPT_SALT_BYTES = 16
-SCRYPT_MAXMEM = 128 * 1024 * 1024
+SCRYPT_MAXMEM = 256 * 1024 * 1024
+
+DEFAULT_MAX_CONCURRENT_SCRYPT = 4
+DEFAULT_SCRYPT_ACQUIRE_TIMEOUT_SECONDS = 2.0
+
+
+class ScryptConcurrencyLimitError(RuntimeError):
+    """Raised when concurrent password hashing/verification slots are exhausted."""
+
+
+class _BoundedScryptGate:
+    """Bounds concurrent scrypt memory allocations to prevent RAM exhaustion under burst load."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._limit = DEFAULT_MAX_CONCURRENT_SCRYPT
+        self._active = 0
+        self._cond = threading.Condition(self._lock)
+
+    def _configured_limit(self) -> int:
+        raw = os.getenv("SUBGUARD_MAX_CONCURRENT_SCRYPT", str(DEFAULT_MAX_CONCURRENT_SCRYPT)).strip()
+        return max(1, min(16, int(raw)))
+
+    def _acquire_timeout(self) -> float:
+        raw = os.getenv("SUBGUARD_SCRYPT_ACQUIRE_TIMEOUT", str(DEFAULT_SCRYPT_ACQUIRE_TIMEOUT_SECONDS)).strip()
+        return max(0.01, float(raw))
+
+    @contextmanager
+    def acquire(self) -> Iterator[None]:
+        limit = self._configured_limit()
+        timeout = self._acquire_timeout()
+        with self._cond:
+            deadline = None
+            while self._active >= limit:
+                if deadline is None:
+                    import time
+                    deadline = time.monotonic() + timeout
+                else:
+                    import time
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ScryptConcurrencyLimitError(
+                            "Password verification service is busy; please retry shortly."
+                        )
+                    self._cond.wait(timeout=remaining)
+                    continue
+                self._cond.wait(timeout=timeout)
+                limit = self._configured_limit()
+            self._active += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._active -= 1
+                self._cond.notify()
+
+
+_scrypt_gate = _BoundedScryptGate()
 
 MIN_PASSWORD_LENGTH = 12
 _BLOCKED_WEAK_PASSWORDS = {
@@ -76,15 +138,16 @@ def hash_password(
         validate_password_strength(password)
 
     salt = secrets.token_bytes(SCRYPT_SALT_BYTES)
-    derived = hashlib.scrypt(
-        password.encode("utf-8"),
-        salt=salt,
-        n=n,
-        r=r,
-        p=p,
-        maxmem=SCRYPT_MAXMEM,
-        dklen=SCRYPT_DKLEN,
-    )
+    with _scrypt_gate.acquire():
+        derived = hashlib.scrypt(
+            password.encode("utf-8"),
+            salt=salt,
+            n=n,
+            r=r,
+            p=p,
+            maxmem=SCRYPT_MAXMEM,
+            dklen=SCRYPT_DKLEN,
+        )
     salt_b64 = base64.urlsafe_b64encode(salt).decode("ascii")
     dk_b64 = base64.urlsafe_b64encode(derived).decode("ascii")
     return f"scrypt${n}${r}${p}${salt_b64}${dk_b64}"
@@ -97,11 +160,20 @@ def _parse_scrypt_hash(stored_hash: str) -> Tuple[int, int, int, bytes, bytes]:
     n = int(parts[1])
     r = int(parts[2])
     p = int(parts[3])
-    if n < 16384 or r < 1 or p < 1:
-        raise ValueError("Password hash cost parameters below safe bounds")
+    if n < MIN_SUPPORTED_SCRYPT_N or n > MAX_SUPPORTED_SCRYPT_N or r < 1 or r > 16 or p < 1 or p > 4:
+        raise ValueError("Password hash cost parameters outside safe bounds")
     salt = base64.urlsafe_b64decode(parts[4].encode("ascii"))
     expected = base64.urlsafe_b64decode(parts[5].encode("ascii"))
     return n, r, p, salt, expected
+
+
+def needs_rehash(stored_hash: str) -> bool:
+    """Return True if stored hash uses weaker parameters than current OWASP defaults."""
+    try:
+        n, r, p, _salt, _expected = _parse_scrypt_hash(stored_hash)
+    except Exception:
+        return False
+    return n < DEFAULT_SCRYPT_N or r < DEFAULT_SCRYPT_R or p < DEFAULT_SCRYPT_P
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
@@ -110,6 +182,10 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
     try:
         n, r, p, salt, expected = _parse_scrypt_hash(stored_hash)
+    except Exception:
+        return False
+
+    with _scrypt_gate.acquire():
         derived = hashlib.scrypt(
             password.encode("utf-8"),
             salt=salt,
@@ -119,22 +195,21 @@ def verify_password(password: str, stored_hash: str) -> bool:
             maxmem=SCRYPT_MAXMEM,
             dklen=len(expected),
         )
-        return hmac.compare_digest(derived, expected)
-    except Exception:
-        return False
+    return hmac.compare_digest(derived, expected)
 
 
 def dummy_password_verify(password: str) -> None:
     """Execute scrypt work matching real verification to prevent user enumeration by timing."""
-    derived = hashlib.scrypt(
-        (password or "").encode("utf-8"),
-        salt=_DUMMY_SALT,
-        n=DEFAULT_SCRYPT_N,
-        r=DEFAULT_SCRYPT_R,
-        p=DEFAULT_SCRYPT_P,
-        maxmem=SCRYPT_MAXMEM,
-        dklen=SCRYPT_DKLEN,
-    )
+    with _scrypt_gate.acquire():
+        derived = hashlib.scrypt(
+            (password or "").encode("utf-8"),
+            salt=_DUMMY_SALT,
+            n=DEFAULT_SCRYPT_N,
+            r=DEFAULT_SCRYPT_R,
+            p=DEFAULT_SCRYPT_P,
+            maxmem=SCRYPT_MAXMEM,
+            dklen=SCRYPT_DKLEN,
+        )
     hmac.compare_digest(derived, _DUMMY_DERIVED)
 
 

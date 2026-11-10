@@ -2352,15 +2352,15 @@ class Phase7327JsonModeCompatibilityTests(unittest.TestCase):
 
     def test_12_existing_configuration_remains_backward_compatible(self):
         """12. Existing configuration remains fully backward-compatible."""
-        from app.extraction.providers import get_extraction_provider
+        from app.extraction.providers import get_benchmark_extraction_provider
         from evaluation.runners.benchmark import BenchmarkRunner
 
         # Factory without json_mode defaults to enabled
-        provider = get_extraction_provider("openrouter", api_key="test-key")
+        provider = get_benchmark_extraction_provider("openrouter", api_key="test-key")
         self.assertTrue(provider.json_mode)
 
         # Factory with explicit json_mode="disabled"
-        provider_dis = get_extraction_provider("openrouter", api_key="test-key", json_mode="disabled")
+        provider_dis = get_benchmark_extraction_provider("openrouter", api_key="test-key", json_mode="disabled")
         self.assertFalse(provider_dis.json_mode)
 
         # BenchmarkRunner defaults without breaking

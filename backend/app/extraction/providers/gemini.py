@@ -15,6 +15,7 @@ from typing import Any, List, Optional
 from app.extraction.providers.base import (
     BaseExtractionProvider,
     ExtractionConfigurationError,
+    ExtractionInvalidRequestError,
     ExtractionProviderError,
     ExtractionRateLimitError,
     ExtractionSchemaValidationError,
@@ -22,6 +23,7 @@ from app.extraction.providers.base import (
 )
 from app.schemas.pdf import PDFPageInspection
 from app.schemas.raw_extraction import RawInsuranceExtraction
+from app.security.config import get_max_provider_images, get_max_provider_payload_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +61,8 @@ class GeminiExtractionProvider(BaseExtractionProvider):
     def provider_name(self) -> str:
         return "gemini"
 
-    def _get_client(self) -> Any:
-        """Initialize or return the google-genai Client."""
+    def _get_client(self, timeout_seconds: float = 30.0) -> Any:
+        """Initialize or return the google-genai Client configured with an HTTP timeout."""
         if self._injected_client is not None:
             return self._injected_client
 
@@ -72,7 +74,13 @@ class GeminiExtractionProvider(BaseExtractionProvider):
 
         try:
             from google import genai
-            return genai.Client(api_key=self._api_key)
+            from google.genai import types
+
+            timeout_ms = max(1000, int(round(timeout_seconds * 1000)))
+            return genai.Client(
+                api_key=self._api_key,
+                http_options=types.HttpOptions(timeout=timeout_ms),
+            )
         except ImportError as exc:
             raise ExtractionConfigurationError(
                 f"google-genai package is not installed: {exc}",
@@ -80,8 +88,12 @@ class GeminiExtractionProvider(BaseExtractionProvider):
             ) from exc
 
     def _build_contents(self, pages: List[PDFPageInspection]) -> List[Any]:
-        """Assemble multimodal contents combining text layers and page images."""
+        """Assemble multimodal contents combining text layers and bounded page images."""
         contents: List[Any] = []
+        max_images = get_max_provider_images()
+        max_payload_bytes = get_max_provider_payload_bytes()
+        image_count = 0
+        total_bytes = 0
 
         try:
             from google.genai import types
@@ -91,15 +103,39 @@ class GeminiExtractionProvider(BaseExtractionProvider):
 
         for p in pages:
             page_header = f"=== PAGE {p.page_number} (Dimensions: {p.width_pts}x{p.height_pts} pt) ===\n"
-            contents.append(page_header + (p.text_content or "(No text layer found on this page)"))
+            page_text = page_header + (p.text_content or "(No text layer found on this page)")
+            total_bytes += len(page_text.encode("utf-8", errors="ignore"))
+            contents.append(page_text)
 
-            # If page image bytes are available, attach as image part
+            # If page image bytes are available, attach as image part within safety ceilings
             image_data = getattr(p, "rendered_image_png", None) or getattr(p, "image_bytes", None)
-            if image_data and has_genai_types:
-                try:
-                    contents.append(types.Part.from_bytes(data=image_data, mime_type="image/png"))
-                except Exception as img_err:
-                    logger.warning("Failed to attach image part for page %d: %s", p.page_number, img_err)
+            if image_data:
+                image_count += 1
+                total_bytes += len(image_data)
+                if image_count > max_images:
+                    raise ExtractionInvalidRequestError(
+                        f"Submission has {image_count} rendered page images exceeding limit ({max_images}). "
+                        "Use a smaller document batch or manual human review.",
+                        provider_name=self.provider_name,
+                    )
+                if total_bytes > max_payload_bytes:
+                    raise ExtractionInvalidRequestError(
+                        f"Extraction payload ({total_bytes:,} bytes) exceeds configured provider limit "
+                        f"({max_payload_bytes:,} bytes). Use a smaller document batch or manual review.",
+                        provider_name=self.provider_name,
+                    )
+                if has_genai_types:
+                    try:
+                        contents.append(types.Part.from_bytes(data=image_data, mime_type="image/png"))
+                    except Exception as img_err:
+                        logger.warning("Failed to attach image part for page %d: %s", p.page_number, img_err)
+
+        if total_bytes > max_payload_bytes:
+            raise ExtractionInvalidRequestError(
+                f"Extraction payload ({total_bytes:,} bytes) exceeds configured provider limit "
+                f"({max_payload_bytes:,} bytes). Use a smaller document batch or manual review.",
+                provider_name=self.provider_name,
+            )
 
         return contents
 
@@ -109,8 +145,8 @@ class GeminiExtractionProvider(BaseExtractionProvider):
         pages: List[PDFPageInspection],
         timeout_seconds: float = 30.0,
     ) -> RawInsuranceExtraction:
-        """Call Gemini to extract structured insurance information with bounded retries."""
-        client = self._get_client()
+        """Call Gemini to extract structured insurance information with bounded retries and timeout."""
+        client = self._get_client(timeout_seconds=timeout_seconds)
 
         try:
             from google.genai import types
@@ -122,11 +158,13 @@ class GeminiExtractionProvider(BaseExtractionProvider):
             ) from exc
 
         contents = self._build_contents(pages)
+        timeout_ms = max(1000, int(round(timeout_seconds * 1000)))
         config = types.GenerateContentConfig(
             system_instruction=EXTRACTION_SYSTEM_PROMPT,
             response_mime_type="application/json",
             response_schema=RawInsuranceExtraction,
             temperature=0.0,
+            http_options=types.HttpOptions(timeout=timeout_ms),
         )
 
         last_error: Optional[Exception] = None

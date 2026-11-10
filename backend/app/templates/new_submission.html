@@ -19,19 +19,19 @@
 <!-- Offline Synthetic Demonstration Presets -->
 <div class="presets-bar">
     <span class="presets-label">⚡ Bundled Demo Scenarios:</span>
-    <button type="button" class="preset-chip" onclick="loadSyntheticScenario('SCEN-01')">
+    <button type="button" class="preset-chip" data-scenario-id="SCEN-01">
         Compliant Set (SCEN-01: Apex Electric)
     </button>
-    <button type="button" class="preset-chip" onclick="loadSyntheticScenario('SCEN-02')">
+    <button type="button" class="preset-chip" data-scenario-id="SCEN-02">
         Sub-Limit GL (SCEN-02: Deficient Occurrence)
     </button>
-    <button type="button" class="preset-chip" onclick="loadSyntheticScenario('SCEN-13')">
+    <button type="button" class="preset-chip" data-scenario-id="SCEN-13">
         Expired Policy (SCEN-13)
     </button>
-    <button type="button" class="preset-chip" onclick="loadSyntheticScenario('SCEN-17')">
+    <button type="button" class="preset-chip" data-scenario-id="SCEN-17">
         Suffix Discrepancy (SCEN-17: LLC vs Inc)
     </button>
-    <button type="button" class="preset-chip" onclick="loadSyntheticScenario('SCEN-19')">
+    <button type="button" class="preset-chip" data-scenario-id="SCEN-19">
         Missing Endorsement (SCEN-19)
     </button>
 </div>
@@ -66,13 +66,13 @@
                         📄 Certificate of Insurance (COI) PDF *
                         <span style="font-weight: normal; color: #b91c1c;">(Required)</span>
                     </label>
-                    <div class="file-dropzone" onclick="document.getElementById('coi_file').click()">
+                    <div class="file-dropzone" data-target-input="coi_file">
                         <div style="font-size: 28px; margin-bottom: 6px;">📋</div>
                         <strong style="color: #1e3a8a; font-size: 13px;">Choose ACORD 25 Certificate PDF</strong>
                         <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Max size: 15 MB &bull; .PDF only</div>
                         <div id="coi_filename_display" style="margin-top: 8px; font-weight: 600; color: #15803d; font-size: 12px;"></div>
                     </div>
-                    <input type="file" id="coi_file" name="coi_file" accept=".pdf,application/pdf" style="display: none;" required onchange="handleFileSelected('coi_file', 'coi_filename_display')">
+                    <input type="file" id="coi_file" name="coi_file" accept=".pdf,application/pdf" style="display: none;" required>
                 </div>
 
                 <!-- Optional Endorsements Upload -->
@@ -81,13 +81,13 @@
                         📎 Endorsement Documents PDF
                         <span style="font-weight: normal; color: #64748b;">(Optional / Multiple)</span>
                     </label>
-                    <div class="file-dropzone" onclick="document.getElementById('endorsement_files').click()">
+                    <div class="file-dropzone" data-target-input="endorsement_files">
                         <div style="font-size: 28px; margin-bottom: 6px;">📑</div>
                         <strong style="color: #1e3a8a; font-size: 13px;">Attach Policy Endorsements (CG 20 10, etc.)</strong>
                         <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Select one or multiple endorsement PDFs</div>
                         <div id="end_filename_display" style="margin-top: 8px; font-weight: 600; color: #15803d; font-size: 12px;"></div>
                     </div>
-                    <input type="file" id="endorsement_files" name="endorsement_files" accept=".pdf,application/pdf" multiple style="display: none;" onchange="handleFilesSelected('endorsement_files', 'end_filename_display')">
+                    <input type="file" id="endorsement_files" name="endorsement_files" accept=".pdf,application/pdf" multiple style="display: none;">
                 </div>
             </div>
 
@@ -279,6 +279,27 @@
             submitBtn.innerText = 'Evaluate Compliance →';
             indicator.style.display = 'none';
         }
+    });
+
+    document.querySelectorAll('.preset-chip[data-scenario-id]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            loadSyntheticScenario(this.getAttribute('data-scenario-id'));
+        });
+    });
+
+    document.querySelectorAll('.file-dropzone[data-target-input]').forEach(function(zone) {
+        zone.addEventListener('click', function() {
+            const target = document.getElementById(this.getAttribute('data-target-input'));
+            if (target) target.click();
+        });
+    });
+
+    document.getElementById('coi_file').addEventListener('change', function() {
+        handleFileSelected('coi_file', 'coi_filename_display');
+    });
+
+    document.getElementById('endorsement_files').addEventListener('change', function() {
+        handleFilesSelected('endorsement_files', 'end_filename_display');
     });
 </script>
 {% endblock %}

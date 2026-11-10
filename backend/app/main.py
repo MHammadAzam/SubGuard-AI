@@ -10,8 +10,10 @@ Provides:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
+import shutil
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
@@ -28,6 +30,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,8 +38,15 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from app.compliance.evaluator import ComplianceEvaluator
-from app.documents.review_service import DocumentReviewService, get_default_requirements, get_upload_dir
-from app.persistence.database import get_connection, init_db
+from app.documents.review_service import (
+    DocumentReviewService,
+    ProcessingConcurrencyLimitError,
+    _processing_gate,
+    get_default_requirements,
+    get_upload_dir,
+)
+from app.extraction.providers.base import sanitize_error_message
+from app.persistence.database import get_connection, get_schema_version, init_db
 from app.persistence.repository import SubmissionRepository
 from app.schemas.insurance import (
     ComplianceFinding,
@@ -48,11 +58,14 @@ from app.schemas.insurance import (
     Severity,
     validate_requirement_profile,
 )
-from app.security.audit_log import log_security_event
+from app.security.audit_log import configure_security_logging, log_security_event
 from app.security.bootstrap import bootstrap_admin_from_env
 from app.security.config import (
     PRE_LOGIN_CSRF_COOKIE_NAME,
     SESSION_COOKIE_NAME,
+    get_allowed_providers,
+    get_app_env,
+    get_audit_log_path,
     get_cors_origins,
     get_login_rate_limits,
     is_cookie_secure,
@@ -61,7 +74,9 @@ from app.security.config import (
     is_production_env,
     resolve_effective_scheme,
     validate_production_config,
+    validate_requested_provider,
 )
+from app.security.passwords import ScryptConcurrencyLimitError
 from app.security.rate_limit import login_rate_limiter
 from app.security.rbac import (
     BrowserAuthRedirectRequired,
@@ -80,8 +95,10 @@ from app.security.service import (
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
+app_logger = logging.getLogger("subguard.app")
 
-# Initialize SQLite database schema before global services and validate config
+# Configure security audit logging and initialize schema cleanly
+configure_security_logging(audit_log_path=get_audit_log_path())
 init_db()
 repository = SubmissionRepository()
 evaluator = ComplianceEvaluator()
@@ -95,7 +112,8 @@ require_ui_roles = _auth_deps["require_ui_roles"]
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Ensure DB tables exist, apply explicit admin bootstrap if set, and fail closed in prod."""
+    """Ensure DB tables exist, configure audit logs, apply bootstrap if set, and fail closed in prod."""
+    configure_security_logging(audit_log_path=get_audit_log_path())
     init_db(repository.db_path)
     bootstrap_admin_from_env(repository.db_path)
     validate_production_config(repository.db_path)
@@ -107,6 +125,9 @@ app = FastAPI(
     version="0.2.0",
     description="Deterministic evaluation service and web interface for insurance compliance documents.",
     lifespan=lifespan,
+    docs_url=None if is_production_env() else "/docs",
+    redoc_url=None if is_production_env() else "/redoc",
+    openapi_url=None if is_production_env() else "/openapi.json",
 )
 
 # Restrictive explicit CORS allowlist only (disabled by default when empty)
@@ -155,6 +176,14 @@ async def security_headers_and_tls_middleware(request: Request, call_next):
             status_code=status.HTTP_403_FORBIDDEN,
             content={"detail": "HTTPS is required in production mode."},
         )
+
+    if is_production_env() and request.url.path in {
+        "/docs",
+        "/docs/oauth2-redirect",
+        "/redoc",
+        "/openapi.json",
+    }:
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": "Not Found"})
 
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -343,7 +372,42 @@ def login_submit(
             detail="Invalid or missing login CSRF token.",
         )
 
-    user = auth_service.authenticate_credentials(norm_username, password)
+    try:
+        user = auth_service.authenticate_credentials(norm_username, password)
+    except ScryptConcurrencyLimitError:
+        log_security_event(
+            "login_concurrency_limited",
+            outcome="rate_limited",
+            username=norm_username or None,
+            client_ip=client_ip,
+            path=request.url.path,
+        )
+        fresh_csrf = generate_login_csrf_token()
+        resp = templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "next_url": safe_next,
+                "login_csrf_token": fresh_csrf,
+                "error_message": "Authentication service busy. Please retry shortly.",
+                "submitted_username": username,
+                "current_user": None,
+                "csrf_token": None,
+                "csp_nonce": getattr(request.state, "csp_nonce", ""),
+            },
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": "2"},
+        )
+        resp.set_cookie(
+            key=PRE_LOGIN_CSRF_COOKIE_NAME,
+            value=fresh_csrf,
+            httponly=True,
+            samesite="lax",
+            secure=cookie_secure,
+            max_age=600,
+            path="/login",
+        )
+        return resp
     if not user:
         log_security_event(
             "login_failure",
@@ -617,6 +681,76 @@ def admin_revoke_token(
     return {"status": "revoked", "id": token_id}
 
 
+@app.post("/api/v1/admin/sessions/purge")
+def admin_purge_expired_sessions(
+    request: Request,
+    current_user: AuthenticatedPrincipal = Depends(require_api_roles("admin")),
+):
+    """Delete expired or revoked sessions/tokens without affecting active sessions."""
+    purged = auth_service.purge_expired_sessions()
+    log_security_event(
+        "sessions_purged",
+        outcome="success",
+        username=current_user.username,
+        user_id=current_user.user_id,
+        role=current_user.role,
+        client_ip=get_client_ip(request),
+        path=request.url.path,
+        details={"purged_count": purged},
+    )
+    return {"status": "ok", "purged": purged}
+
+
+@app.get("/api/v1/admin/system-health")
+def admin_system_health(
+    _current_user: AuthenticatedPrincipal = Depends(require_api_roles("admin")),
+):
+    """Authenticated readiness diagnostics checking SQLite connectivity and upload writability."""
+    db_ok = False
+    schema_ver = 0
+    db_err: Optional[str] = None
+    try:
+        conn = get_connection(repository.db_path)
+        try:
+            conn.execute("SELECT 1;").fetchone()
+            schema_ver = get_schema_version(repository.db_path)
+            db_ok = True
+        finally:
+            conn.close()
+    except Exception as exc:
+        db_err = sanitize_error_message(str(exc))
+
+    upload_ok = False
+    upload_err: Optional[str] = None
+    try:
+        udir = get_upload_dir().resolve()
+        udir.mkdir(parents=True, exist_ok=True)
+        probe = udir / f".health_probe_{uuid4().hex[:8]}"
+        probe.write_bytes(b"ok")
+        probe.unlink(missing_ok=True)
+        upload_ok = True
+    except Exception as exc:
+        upload_err = sanitize_error_message(str(exc))
+
+    overall_ok = db_ok and upload_ok
+    payload: Dict[str, Any] = {
+        "status": "ok" if overall_ok else "degraded",
+        "environment": get_app_env(),
+        "database_ok": db_ok,
+        "schema_version": schema_ver,
+        "upload_storage_ok": upload_ok,
+        "allowed_providers": sorted(get_allowed_providers()),
+    }
+    if db_err:
+        payload["database_error"] = db_err
+    if upload_err:
+        payload["upload_error"] = upload_err
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if overall_ok else status.HTTP_503_SERVICE_UNAVAILABLE,
+        content=payload,
+    )
+
+
 # ============================================================================
 # Core API Endpoints
 # ============================================================================
@@ -666,6 +800,7 @@ def evaluate_compliance(request: EvaluationRequest) -> ComplianceReviewResult:
     dependencies=[Depends(require_api_roles("analyst", "reviewer", "admin"))],
 )
 async def review_documents(
+    request: Request,
     coi_file: UploadFile = File(..., description="Primary Certificate of Insurance PDF (ACORD 25)"),
     endorsement_files: List[UploadFile] = File(default=[], description="Optional endorsement PDFs"),
     requirements: Optional[str] = Form(None, description="Optional JSON list of custom InsuranceRequirements"),
@@ -674,6 +809,27 @@ async def review_documents(
     provider: str = Form("mock", description="Extraction provider: 'mock' (default)"),
 ):
     """Ingest uploaded PDF documents, extract information, evaluate compliance, and store in SQLite."""
+    # 0. Validate provider against server allowlist BEFORE reading uploaded payloads
+    try:
+        validated_provider = validate_requested_provider(provider)
+    except PermissionError as perm_err:
+        log_security_event(
+            "provider_rejected_policy",
+            outcome="denied",
+            client_ip=get_client_ip(request),
+            path=request.url.path,
+            details={"requested_provider": (provider or "").strip().lower()},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(perm_err),
+        ) from perm_err
+    except ValueError as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(val_err),
+        ) from val_err
+
     # 1. Parse evaluation date
     eval_d = None
     if evaluation_date:
@@ -721,24 +877,72 @@ async def review_documents(
             requirements=parsed_reqs,
             submission_name=submission_name,
             evaluation_date=eval_d,
-            provider_name=provider,
+            provider_name=validated_provider,
         )
         return result
+    except PermissionError as perm_err:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(perm_err),
+        ) from perm_err
+    except ProcessingConcurrencyLimitError as busy_err:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(busy_err),
+            headers={"Retry-After": "5"},
+        ) from busy_err
     except ValueError as val_err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(val_err),
-        )
+        ) from val_err
     except Exception as exc:
+        correlation_id = f"err_{uuid4().hex[:10]}"
+        safe_exc = sanitize_error_message(str(exc))
+        app_logger.exception(
+            "Unhandled submission processing error correlation_id=%s detail=%s",
+            correlation_id,
+            safe_exc,
+        )
+        log_security_event(
+            "submission_processing_error",
+            outcome="error",
+            client_ip=get_client_ip(request),
+            path=request.url.path,
+            details={"correlation_id": correlation_id, "error_type": exc.__class__.__name__},
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Submission processing failed: {str(exc)}",
-        )
+            detail=f"Submission processing failed (reference: {correlation_id}).",
+        ) from exc
 
 
-def _resolve_confined_upload_path(raw_storage_path: str) -> Path:
+def _resolve_confined_upload_path(
+    raw_storage_path: str,
+    *,
+    submission_id: Optional[str] = None,
+) -> Path:
     """Resolve stored document path and verify strict, symlink-free containment under upload dir."""
     allowed_root = get_upload_dir().resolve()
+    allowed_scope = allowed_root
+    if submission_id is not None:
+        if (
+            not submission_id
+            or "/" in submission_id
+            or "\\" in submission_id
+            or ".." in submission_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: invalid document submission association.",
+            )
+        allowed_scope = (allowed_root / submission_id).resolve()
+        if not allowed_scope.is_relative_to(allowed_root):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: invalid submission storage scope.",
+            )
+
     raw_path = Path(raw_storage_path)
 
     if raw_path.is_symlink():
@@ -756,10 +960,10 @@ def _resolve_confined_upload_path(raw_storage_path: str) -> Path:
             detail="Access denied: invalid document path.",
         ) from exc
 
-    if not resolved.is_relative_to(allowed_root):
+    if not resolved.is_relative_to(allowed_scope):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: document path escapes authorized storage.",
+            detail="Access denied: document path escapes authorized submission storage.",
         )
 
     # Check every path component inside allowed_root for symlinks
@@ -786,15 +990,14 @@ def _sanitize_download_filename(filename: Optional[str], fallback: str = "docume
     return cleaned[:150]
 
 
-@app.get("/api/v1/documents/{document_id}/download")
-def download_document(
+def _serve_authorized_document(
     document_id: str,
+    *,
+    expected_submission_id: Optional[str],
     request: Request,
-    current_user: AuthenticatedPrincipal = Depends(
-        require_api_roles("viewer", "analyst", "reviewer", "admin")
-    ),
-):
-    """Secure authenticated document download endpoint with strict path confinement."""
+    current_user: AuthenticatedPrincipal,
+) -> FileResponse:
+    """Verify document DB record, submission association, confined path, and serve attachment."""
     conn = get_connection(repository.db_path)
     try:
         cur = conn.cursor()
@@ -811,8 +1014,31 @@ def download_document(
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
+        if expected_submission_id is not None and row["submission_id"] != expected_submission_id:
+            log_security_event(
+                "document_download_denied",
+                outcome="denied",
+                username=current_user.username,
+                user_id=current_user.user_id,
+                role=current_user.role,
+                client_ip=get_client_ip(request),
+                path=request.url.path,
+                details={
+                    "document_id": document_id,
+                    "expected_submission_id": expected_submission_id,
+                    "actual_submission_id": row["submission_id"],
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found for submission",
+            )
+
         try:
-            confined_path = _resolve_confined_upload_path(row["storage_path"])
+            confined_path = _resolve_confined_upload_path(
+                row["storage_path"],
+                submission_id=row["submission_id"],
+            )
         except HTTPException:
             log_security_event(
                 "document_download_denied",
@@ -849,6 +1075,42 @@ def download_document(
         )
     finally:
         conn.close()
+
+
+@app.get("/api/v1/documents/{document_id}/download")
+def download_document(
+    document_id: str,
+    request: Request,
+    submission_id: Optional[str] = None,
+    current_user: AuthenticatedPrincipal = Depends(
+        require_api_roles("viewer", "analyst", "reviewer", "admin")
+    ),
+):
+    """Secure authenticated document download endpoint with strict DB and path confinement."""
+    return _serve_authorized_document(
+        document_id,
+        expected_submission_id=submission_id,
+        request=request,
+        current_user=current_user,
+    )
+
+
+@app.get("/api/v1/submissions/{submission_id}/documents/{document_id}/download")
+def download_submission_document(
+    submission_id: str,
+    document_id: str,
+    request: Request,
+    current_user: AuthenticatedPrincipal = Depends(
+        require_api_roles("viewer", "analyst", "reviewer", "admin")
+    ),
+):
+    """Submission-scoped authenticated document download enforcing submission-document association."""
+    return _serve_authorized_document(
+        document_id,
+        expected_submission_id=submission_id,
+        request=request,
+        current_user=current_user,
+    )
 
 
 @app.get(
@@ -1345,11 +1607,154 @@ def get_dashboard_stats_api():
     return repository.get_dashboard_stats()
 
 
+def _execute_demo_scenario_sync(scenario_id: str, target_scen: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute bundled synthetic scenario synchronously under the processing gate with full cleanup."""
+    from app.compliance.reconciliation import reconcile_extracted_document_set
+    from app.extraction.pipeline import ExtractionPipelineService, reconcile_cross_document_set
+    from app.extraction.providers.mock import HonestApplicationMockProvider
+    from app.security.config import validate_requested_provider
+
+    # Enforce server provider policy even for synthetic demo execution
+    validate_requested_provider("mock")
+
+    fixtures_dir = BASE_DIR.parent / "evaluation" / "fixtures" / "pdfs"
+    cohort_fixtures_dir = BASE_DIR.parent / "evaluation" / "cohorts" / "fixtures"
+    scen_pdf_dir = cohort_fixtures_dir / scenario_id
+    if not scen_pdf_dir.exists():
+        scen_pdf_dir = fixtures_dir
+
+    sub_id = f"demo_{scenario_id.lower()}_{uuid4().hex[:6]}"
+    eval_d = date(2025, 6, 15)
+    reqs = get_default_requirements(
+        subcontractor_name="Apex Electrical Contractors LLC",
+        certificate_holder_name="General Contractor Corp",
+    )
+
+    demo_dest = get_upload_dir().resolve() / sub_id
+    dir_created = False
+    persisted = False
+
+    with _processing_gate.acquire():
+        try:
+            demo_dest.mkdir(parents=True, exist_ok=True)
+            dir_created = True
+
+            doc_records = []
+            doc_sets = []
+            inspections = []
+
+            for doc_info in target_scen.get("documents", []):
+                fname = doc_info["filename"]
+                pdf_path = scen_pdf_dir / fname
+                if not pdf_path.exists():
+                    pdf_path = fixtures_dir / fname
+                if not pdf_path.exists():
+                    continue
+
+                pdf_bytes = pdf_path.read_bytes()
+                doc_id = f"doc_{uuid4().hex[:12]}"
+                stored_path = demo_dest / f"{doc_id}_{Path(fname).name}"
+                stored_path.write_bytes(pdf_bytes)
+
+                insp = review_service.pdf_processor.process_pdf(pdf_bytes, document_id=doc_id)
+                inspections.append(insp)
+
+                pipe_res = ExtractionPipelineService(
+                    extraction_provider=HonestApplicationMockProvider()
+                ).process_inspection(insp, subcontractor_id=target_scen.get("subcontractor_id", "sub_apex"))
+
+                if pipe_res.document_set:
+                    doc_sets.append(pipe_res.document_set)
+
+                doc_records.append({
+                    "id": doc_id,
+                    "submission_id": sub_id,
+                    "original_filename": fname,
+                    "document_type": doc_info.get("document_type", "coi"),
+                    "storage_path": str(stored_path),
+                    "file_size_bytes": len(pdf_bytes),
+                    "page_count": insp.page_count,
+                    "processing_status": "processed" if pipe_res.document_set else "failed",
+                    "error_message": pipe_res.error_message,
+                })
+
+            combined_coverages = []
+            combined_endorsements = []
+            named_insured_info = None
+            additional_named_insureds = []
+            cert_holder_info = None
+            contradictions = []
+
+            for ds in doc_sets:
+                if ds.named_insured and (ds.named_insured.name or ds.named_insured.evidence):
+                    if not named_insured_info or not named_insured_info.name:
+                        named_insured_info = ds.named_insured
+                    else:
+                        additional_named_insureds.append(ds.named_insured)
+                if ds.additional_named_insureds:
+                    additional_named_insureds.extend(ds.additional_named_insureds)
+                if ds.certificate_holder and (not cert_holder_info or not cert_holder_info.name):
+                    cert_holder_info = ds.certificate_holder
+                combined_coverages.extend(ds.coverages)
+                combined_endorsements.extend(ds.endorsements)
+                contradictions.extend(ds.raw_contradictions_detected)
+
+            composite_set = ExtractedDocumentSet(
+                subcontractor_id=target_scen.get("subcontractor_id", "sub_apex"),
+                documents_submitted=[i.classified_type for i in inspections],
+                is_document_set_complete=True,
+                named_insured=named_insured_info,
+                additional_named_insureds=additional_named_insureds,
+                certificate_holder=cert_holder_info,
+                coverages=combined_coverages,
+                endorsements=combined_endorsements,
+                raw_contradictions_detected=contradictions,
+            )
+
+            reconcile_cross_document_set(composite_set)
+            composite_set.reconciliation_result = reconcile_extracted_document_set(
+                document_set=composite_set,
+                requirements=reqs,
+                evaluation_date=eval_d,
+                packet_id=sub_id,
+            )
+
+            review_result = review_service.evaluator.evaluate(
+                document_set=composite_set,
+                requirements=reqs,
+                evaluation_date=eval_d,
+            )
+
+            serialized = {
+                "review": review_result.model_dump(mode="json"),
+                "document_set": composite_set.model_dump(mode="json"),
+                "pipeline_errors": [],
+            }
+
+            repository.create_submission_with_documents(
+                submission_id=sub_id,
+                name=f"Demo {scenario_id}: {target_scen.get('title', '')}",
+                overall_status=review_result.overall_status.value,
+                processing_status="completed",
+                provider="mock",
+                evaluation_date=eval_d.isoformat(),
+                result_data=serialized,
+                documents=doc_records,
+                subcontractor_name=named_insured_info.name if named_insured_info else "Apex Electrical Contractors LLC",
+            )
+            persisted = True
+            return {"status": "ok", "submission_id": sub_id, "scenario_id": scenario_id}
+        except Exception:
+            if dir_created and not persisted:
+                shutil.rmtree(demo_dest, ignore_errors=True)
+            raise
+
+
 @app.post(
     "/api/v1/compliance/demo-run/{scenario_id}",
     dependencies=[Depends(require_api_roles("analyst", "reviewer", "admin"))],
 )
-def run_synthetic_demo_scenario(scenario_id: str):
+async def run_synthetic_demo_scenario(scenario_id: str, request: Request):
     """Run a bundled synthetic scenario from cohort_scenarios_v1.json with one click."""
     if not is_demo_endpoint_enabled():
         raise HTTPException(
@@ -1361,14 +1766,22 @@ def run_synthetic_demo_scenario(scenario_id: str):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid scenario identifier.",
         )
-    fixtures_dir = BASE_DIR.parent / "evaluation" / "fixtures" / "pdfs"
-    cohort_fixtures_dir = BASE_DIR.parent / "evaluation" / "cohorts" / "fixtures"
-    ann_file = BASE_DIR.parent / "evaluation" / "annotations" / "cohort_scenarios_v1.json"
 
+    from app.security.config import validate_requested_provider
+
+    try:
+        validate_requested_provider("mock")
+    except PermissionError as perm_err:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(perm_err),
+        ) from perm_err
+
+    ann_file = BASE_DIR.parent / "evaluation" / "annotations" / "cohort_scenarios_v1.json"
     if not ann_file.exists():
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Annotations file missing")
 
-    with open(ann_file, "r") as f:
+    with open(ann_file, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     target_scen = None
@@ -1380,149 +1793,38 @@ def run_synthetic_demo_scenario(scenario_id: str):
     if not target_scen:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Scenario '{scenario_id}' not found")
 
-    # Map scenario to fixture files
-    scen_pdf_dir = cohort_fixtures_dir / scenario_id
-    if not scen_pdf_dir.exists():
-        scen_pdf_dir = fixtures_dir
-
-    sub_id = f"demo_{scenario_id.lower()}_{uuid4().hex[:6]}"
-    eval_d = date(2025, 6, 15)
-
-    # Use standard requirements or scenario requirements
-    reqs = get_default_requirements(
-        subcontractor_name="Apex Electrical Contractors LLC",
-        certificate_holder_name="General Contractor Corp",
-    )
-
-    # Process documents through review service using file paths
-    doc_records = []
-    doc_sets = []
-    inspections = []
-
-    for doc_info in target_scen.get("documents", []):
-        fname = doc_info["filename"]
-        pdf_path = scen_pdf_dir / fname
-        if not pdf_path.exists():
-            pdf_path = fixtures_dir / fname
-        if not pdf_path.exists():
-            continue
-
-        pdf_bytes = pdf_path.read_bytes()
-        doc_id = f"doc_{uuid4().hex[:12]}"
-
-        # Save to configured upload dir (respects SUBGUARD_UPLOAD_DIR)
-        demo_dest = get_upload_dir().resolve() / sub_id
-        demo_dest.mkdir(parents=True, exist_ok=True)
-        stored_path = demo_dest / f"{doc_id}_{Path(fname).name}"
-        stored_path.write_bytes(pdf_bytes)
-
-        insp = review_service.pdf_processor.process_pdf(pdf_bytes, document_id=doc_id)
-        inspections.append(insp)
-
-        from app.extraction.pipeline import ExtractionPipelineService
-        from app.extraction.providers.mock import HonestApplicationMockProvider
-
-        pipe_res = ExtractionPipelineService(
-            extraction_provider=HonestApplicationMockProvider()
-        ).process_inspection(insp, subcontractor_id=target_scen.get("subcontractor_id", "sub_apex"))
-
-        if pipe_res.document_set:
-            doc_sets.append(pipe_res.document_set)
-
-        doc_records.append({
-            "id": doc_id,
-            "submission_id": sub_id,
-            "original_filename": fname,
-            "document_type": doc_info.get("document_type", "coi"),
-            "storage_path": str(stored_path),
-            "file_size_bytes": len(pdf_bytes),
-            "page_count": insp.page_count,
-            "processing_status": "processed" if pipe_res.document_set else "failed",
-            "error_message": pipe_res.error_message,
-        })
-
-    # Assemble composite set
-    combined_coverages = []
-    combined_endorsements = []
-    named_insured_info = None
-    additional_named_insureds = []
-    cert_holder_info = None
-    contradictions = []
-
-    for ds in doc_sets:
-        if ds.named_insured and (ds.named_insured.name or ds.named_insured.evidence):
-            if not named_insured_info or not named_insured_info.name:
-                named_insured_info = ds.named_insured
-            else:
-                additional_named_insureds.append(ds.named_insured)
-        if ds.additional_named_insureds:
-            additional_named_insureds.extend(ds.additional_named_insureds)
-        if ds.certificate_holder and (not cert_holder_info or not cert_holder_info.name):
-            cert_holder_info = ds.certificate_holder
-        combined_coverages.extend(ds.coverages)
-        combined_endorsements.extend(ds.endorsements)
-        contradictions.extend(ds.raw_contradictions_detected)
-
-    composite_set = ExtractedDocumentSet(
-        subcontractor_id=target_scen.get("subcontractor_id", "sub_apex"),
-        documents_submitted=[i.classified_type for i in inspections],
-        is_document_set_complete=True,
-        named_insured=named_insured_info,
-        additional_named_insureds=additional_named_insureds,
-        certificate_holder=cert_holder_info,
-        coverages=combined_coverages,
-        endorsements=combined_endorsements,
-        raw_contradictions_detected=contradictions,
-    )
-
-    from app.compliance.reconciliation import reconcile_extracted_document_set
-    from app.extraction.pipeline import reconcile_cross_document_set
-
-    reconcile_cross_document_set(composite_set)
-    composite_set.reconciliation_result = reconcile_extracted_document_set(
-        document_set=composite_set,
-        requirements=reqs,
-        evaluation_date=eval_d,
-        packet_id=sub_id,
-    )
-
-    review_result = review_service.evaluator.evaluate(
-        document_set=composite_set,
-        requirements=reqs,
-        evaluation_date=eval_d,
-    )
-
-    serialized = {
-        "review": review_result.model_dump(mode="json"),
-        "document_set": composite_set.model_dump(mode="json"),
-        "pipeline_errors": [],
-    }
-
-    repository.create_submission(
-        submission_id=sub_id,
-        name=f"Demo {scenario_id}: {target_scen.get('title', '')}",
-        overall_status=review_result.overall_status.value,
-        processing_status="completed",
-        provider="mock",
-        evaluation_date=eval_d.isoformat(),
-        result_data=serialized,
-        subcontractor_name=named_insured_info.name if named_insured_info else "Apex Electrical Contractors LLC",
-    )
-
-    for d in doc_records:
-        repository.add_document(
-            document_id=d["id"],
-            submission_id=d["submission_id"],
-            original_filename=d["original_filename"],
-            document_type=d["document_type"],
-            storage_path=d["storage_path"],
-            file_size_bytes=d["file_size_bytes"],
-            page_count=d["page_count"],
-            processing_status=d["processing_status"],
-            error_message=d["error_message"],
+    try:
+        return await run_in_threadpool(_execute_demo_scenario_sync, scenario_id, target_scen)
+    except PermissionError as perm_err:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(perm_err),
+        ) from perm_err
+    except ProcessingConcurrencyLimitError as busy_err:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(busy_err),
+            headers={"Retry-After": "5"},
+        ) from busy_err
+    except Exception as exc:
+        correlation_id = f"err_{uuid4().hex[:10]}"
+        safe_exc = sanitize_error_message(str(exc))
+        app_logger.exception(
+            "Demo scenario execution failed correlation_id=%s detail=%s",
+            correlation_id,
+            safe_exc,
         )
-
-    return {"status": "ok", "submission_id": sub_id, "scenario_id": scenario_id}
+        log_security_event(
+            "demo_scenario_error",
+            outcome="error",
+            client_ip=get_client_ip(request),
+            path=request.url.path,
+            details={"correlation_id": correlation_id, "error_type": exc.__class__.__name__},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Synthetic scenario execution failed (reference: {correlation_id}).",
+        ) from exc
 
 
 # ============================================================================

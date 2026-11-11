@@ -948,6 +948,131 @@ class TestPhase2Security(unittest.TestCase):
             401,
         )
 
+    def test_17_trusted_proxy_client_ip_rate_limit_and_audit_attribution(self):
+        import asyncio
+        import re
+        import httpx
+        from starlette.requests import Request as StarletteRequest
+        from app.security.audit_log import security_logger
+        from app.security.config import resolve_client_ip
+        from app.security.rbac import get_client_ip
+
+        def _make_req(peer_ip: str | None, xff: str | None = None) -> StarletteRequest:
+            headers = []
+            if xff is not None:
+                headers.append((b"x-forwarded-for", xff.encode("latin-1")))
+            scope = {
+                "type": "http",
+                "method": "GET",
+                "path": "/health",
+                "headers": headers,
+                "client": (peer_ip, 54321) if peer_ip is not None else None,
+            }
+            return StarletteRequest(scope)
+
+        # 1. No trusted proxy configured -> ignores X-Forwarded-For even on loopback
+        os.environ.pop("SUBGUARD_TRUSTED_PROXIES", None)
+        self.assertEqual(get_client_ip(_make_req("127.0.0.1", "203.0.113.50")), "127.0.0.1")
+        os.environ["SUBGUARD_TRUSTED_PROXIES"] = ""
+        self.assertEqual(resolve_client_ip("127.0.0.1", "203.0.113.50"), "127.0.0.1")
+
+        # 2. Direct untrusted client with spoofed X-Forwarded-For -> ignored completely
+        os.environ["SUBGUARD_TRUSTED_PROXIES"] = "127.0.0.1"
+        self.assertEqual(get_client_ip(_make_req("198.51.100.77", "203.0.113.9")), "198.51.100.77")
+        self.assertEqual(get_client_ip(_make_req("testclient", "203.0.113.9")), "testclient")
+
+        # 3. Trusted loopback proxy with valid forwarded client address (IPv4 & canonicalized IPv6)
+        self.assertEqual(get_client_ip(_make_req("127.0.0.1", "203.0.113.50")), "203.0.113.50")
+        self.assertEqual(get_client_ip(_make_req("127.0.0.1", "2001:0db8::1")), "2001:db8::1")
+
+        # 4. Trusted proxy with malformed forwarded address -> fail closed to direct proxy peer
+        for bad_xff in (
+            "not-an-ip",
+            "203.0.113.50, not-an-ip",
+            "203.0.113.50:8443",
+            "203.0.113.50, ",
+            "198.51.100.1, bad-hop, 127.0.0.1",
+            ", ".join(["10.0.0.1"] * 12),
+        ):
+            self.assertEqual(
+                get_client_ip(_make_req("127.0.0.1", bad_xff)),
+                "127.0.0.1",
+                f"Malformed/excessive XFF {bad_xff!r} must fail closed to peer IP",
+            )
+
+        # 5. Multiple forwarded addresses -> right-to-left skipping trusted hops only
+        self.assertEqual(
+            get_client_ip(_make_req("127.0.0.1", "9.9.9.9, 203.0.113.50")),
+            "203.0.113.50",
+        )
+        self.assertEqual(
+            get_client_ip(_make_req("127.0.0.1", "9.9.9.9, 203.0.113.50, 127.0.0.1")),
+            "203.0.113.50",
+        )
+
+        # 6 & 7. Live ASGI rate-limit identity consistency + security audit log client_ip attribution
+        records: list[str] = []
+
+        class _CaptureHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record.getMessage())
+
+        cap = _CaptureHandler()
+        security_logger.addHandler(cap)
+        orig_ip_lim = os.environ.get("SUBGUARD_LOGIN_LIMIT_PER_IP")
+        orig_usr_lim = os.environ.get("SUBGUARD_LOGIN_LIMIT_PER_USER")
+        os.environ["SUBGUARD_LOGIN_LIMIT_PER_IP"] = "2"
+        os.environ["SUBGUARD_LOGIN_LIMIT_PER_USER"] = "10"
+        os.environ["SUBGUARD_TRUSTED_PROXIES"] = "127.0.0.1"
+
+        async def _verify_rate_limit_and_audit():
+            async def _attempt_login(client_peer: str, xff: str | None, uname: str) -> int:
+                transport = httpx.ASGITransport(app=app, client=(client_peer, 51000))
+                async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+                    r_get = await ac.get("/login")
+                    m = re.search(r'name="csrf_token"\s+value="([^"]+)"', r_get.text)
+                    headers = {"X-Forwarded-For": xff} if xff is not None else {}
+                    r_post = await ac.post(
+                        "/login",
+                        data={"username": uname, "password": "WrongPassword!99", "csrf_token": m.group(1)},
+                        headers=headers,
+                    )
+                    return r_post.status_code
+
+            # Trusted proxy: Client A hits IP limit=2 on 3rd attempt (even with spoofed left XFF)
+            self.assertEqual(await _attempt_login("127.0.0.1", "203.0.113.10", "u_a1"), 401)
+            self.assertEqual(await _attempt_login("127.0.0.1", "203.0.113.10", "u_a2"), 401)
+            self.assertEqual(await _attempt_login("127.0.0.1", "8.8.8.8, 203.0.113.10", "u_a3"), 429)
+
+            # Distinct Client B through same 127.0.0.1 proxy has its own bucket -> NOT locked out
+            self.assertEqual(await _attempt_login("127.0.0.1", "203.0.113.20", "u_b1"), 401)
+
+            # Untrusted direct client changing X-Forwarded-For still shares 198.51.100.77 bucket
+            self.assertEqual(await _attempt_login("198.51.100.77", "192.0.2.1", "u_x1"), 401)
+            self.assertEqual(await _attempt_login("198.51.100.77", "192.0.2.2", "u_x2"), 401)
+            self.assertEqual(await _attempt_login("198.51.100.77", "192.0.2.3", "u_x3"), 429)
+
+        try:
+            asyncio.run(_verify_rate_limit_and_audit())
+        finally:
+            security_logger.removeHandler(cap)
+            if orig_ip_lim is None:
+                os.environ.pop("SUBGUARD_LOGIN_LIMIT_PER_IP", None)
+            else:
+                os.environ["SUBGUARD_LOGIN_LIMIT_PER_IP"] = orig_ip_lim
+            if orig_usr_lim is None:
+                os.environ.pop("SUBGUARD_LOGIN_LIMIT_PER_USER", None)
+            else:
+                os.environ["SUBGUARD_LOGIN_LIMIT_PER_USER"] = orig_usr_lim
+
+        parsed_events = [json.loads(msg) for msg in records if msg.startswith("{")]
+        ips_by_user = {ev["username"]: ev["client_ip"] for ev in parsed_events if ev.get("username")}
+        self.assertEqual(ips_by_user.get("u_a1"), "203.0.113.10")
+        self.assertEqual(ips_by_user.get("u_a3"), "203.0.113.10")
+        self.assertEqual(ips_by_user.get("u_b1"), "203.0.113.20")
+        self.assertEqual(ips_by_user.get("u_x1"), "198.51.100.77")
+        self.assertEqual(ips_by_user.get("u_x3"), "198.51.100.77")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -136,7 +136,7 @@ def is_https_enforced() -> bool:
 
 
 def get_trusted_proxy_ips() -> List[str]:
-    """Return configured trusted reverse proxy IP/CIDR entries for X-Forwarded-Proto."""
+    """Return configured trusted reverse proxy IP/CIDR entries for forwarded headers."""
     raw = os.getenv("SUBGUARD_TRUSTED_PROXIES", "").strip()
     if not raw:
         return []
@@ -165,6 +165,62 @@ def is_trusted_proxy_client(client_host: Optional[str]) -> bool:
         except ValueError:
             continue
     return False
+
+
+_MAX_FORWARDED_HEADER_LEN = 512
+_MAX_FORWARDED_HOPS = 10
+
+
+def _parse_ip_literal(raw: Optional[str]) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Parse an IPv4/IPv6 literal strictly without ports, hostnames, or zone garbage."""
+    if not raw:
+        return None
+    candidate = raw.strip()
+    if not candidate or len(candidate) > 45:
+        return None
+    try:
+        return ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+
+
+def resolve_client_ip(peer_host: Optional[str], x_forwarded_for: Optional[str]) -> str:
+    """Resolve client IP from X-Forwarded-For only when the direct TCP peer is explicitly trusted.
+
+    Walks X-Forwarded-For right-to-left, skipping configured trusted proxy hops, and selects
+    the rightmost untrusted valid IP literal. Fails closed to the direct peer host on untrusted
+    peers, empty/oversized headers, or malformed hop tokens.
+    """
+    if not peer_host or not peer_host.strip():
+        return "unknown"
+
+    peer_clean = peer_host.strip()
+    peer_ip = _parse_ip_literal(peer_clean)
+    if peer_ip is None:
+        return peer_clean
+
+    canonical_peer = str(peer_ip)
+    if not x_forwarded_for or not is_trusted_proxy_client(canonical_peer):
+        return canonical_peer
+
+    raw_header = x_forwarded_for.strip()
+    if not raw_header or len(raw_header) > _MAX_FORWARDED_HEADER_LEN:
+        return canonical_peer
+
+    raw_hops = [part.strip() for part in raw_header.split(",")]
+    if len(raw_hops) > _MAX_FORWARDED_HOPS or any(not h for h in raw_hops):
+        return canonical_peer
+
+    for hop in reversed(raw_hops):
+        hop_ip = _parse_ip_literal(hop)
+        if hop_ip is None:
+            return canonical_peer
+        canonical_hop = str(hop_ip)
+        if is_trusted_proxy_client(canonical_hop):
+            continue
+        return canonical_hop
+
+    return canonical_peer
 
 
 def resolve_effective_scheme(client_host: Optional[str], url_scheme: str, x_forwarded_proto: Optional[str]) -> str:

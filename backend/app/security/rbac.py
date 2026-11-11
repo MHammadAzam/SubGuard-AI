@@ -12,6 +12,7 @@ from app.security.audit_log import log_security_event
 from app.security.config import (
     SESSION_COOKIE_NAME,
     get_api_mutation_rate_limits,
+    resolve_client_ip,
 )
 from app.security.rate_limit import api_mutation_rate_limiter
 from app.security.service import AuthService, AuthenticatedPrincipal
@@ -40,10 +41,9 @@ def sanitize_next_url(next_url: Optional[str]) -> str:
 
 
 def get_client_ip(request: Request) -> str:
-    """Return direct peer host string for auditing and rate limiting."""
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
+    """Resolve client IP from X-Forwarded-For only when the direct TCP peer is a trusted proxy."""
+    peer_host = request.client.host if (request.client and request.client.host) else None
+    return resolve_client_ip(peer_host, request.headers.get("X-Forwarded-For"))
 
 
 def _extract_bearer_token(request: Request) -> Optional[str]:

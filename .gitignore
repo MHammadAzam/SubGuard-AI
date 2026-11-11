@@ -1,9 +1,12 @@
-# Environment variables & secrets
+# Environment variables, certificates & secrets
 .env
 .env.*
 !.env.example
 *.pem
 *.key
+*.crt
+*.pfx
+*.p12
 
 # Python cache & virtual environments
 __pycache__/
@@ -32,9 +35,20 @@ htmlcov/
 **/evaluation/reports/generated/scenario_bench_*.json
 **/evaluation/reports/generated/scenario_bench_*.md
 
-# Local database and uploaded documents
+# Local database, uploads, logs, backups, and runtime state
 **/data/
 **/uploads/
+**/logs/
+**/backups/
+**/run/
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 *.sqlite
 *.sqlite3
+*.log
+
+# OS metadata
+.DS_Store
+Thumbs.db
